@@ -2,7 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
@@ -15,7 +15,10 @@ from app.models import (
     RecipeLine,
     Sale,
     SaleLine,
+    Sauce,
+    SauceLine,
     StockMovement,
+    Supplier,
     WasteEvent,
     utcnow,
 )
@@ -95,9 +98,10 @@ def record_movement(
     return movement
 
 
-def recipe_cost(db: Session, menu_item: MenuItem) -> Decimal:
+def sauce_cost(db: Session, sauce: Sauce) -> Decimal:
     total = Decimal("0.00")
-    for line in menu_item.recipe_lines:
+    lines = sauce.lines or db.scalars(select(SauceLine).where(SauceLine.sauce_id == sauce.id)).all()
+    for line in lines:
         ingredient = db.get(Item, line.item_id)
         if ingredient is None:
             continue
@@ -105,16 +109,145 @@ def recipe_cost(db: Session, menu_item: MenuItem) -> Decimal:
     return total
 
 
+def line_price_used(db: Session, line: RecipeLine) -> Decimal:
+    if line.sauce_id:
+        sauce = db.get(Sauce, line.sauce_id)
+        if sauce is None:
+            return money(0)
+        return money(qty(line.quantity) * sauce_cost(db, sauce))
+    if line.item_id:
+        ingredient = db.get(Item, line.item_id)
+        if ingredient is None:
+            return money(0)
+        return money(qty(line.quantity) * Decimal(ingredient.unit_cost))
+    return money(0)
+
+
+def recipe_cost(db: Session, menu_item: MenuItem) -> Decimal:
+    total = Decimal("0.00")
+    for line in menu_item.recipe_lines:
+        total += line_price_used(db, line)
+    return total
+
+
+def _add_usage(needed: dict[int, tuple[Item, Decimal]], item: Item, used: Decimal) -> None:
+    current = needed.get(item.id)
+    needed[item.id] = (item, (current[1] if current else Decimal("0")) + used)
+
+
 def explode_recipe(db: Session, menu_item: MenuItem, servings: int) -> list[tuple[Item, Decimal]]:
     if servings <= 0:
         raise HTTPException(status_code=400, detail="Servings must be greater than zero")
     if not menu_item.recipe_lines:
         raise HTTPException(status_code=400, detail=f"{menu_item.name} has no recipe")
-    usage: list[tuple[Item, Decimal]] = []
+    needed: dict[int, tuple[Item, Decimal]] = {}
     for line in menu_item.recipe_lines:
-        item = get_item(db, line.item_id)
-        usage.append((item, qty(line.quantity) * servings))
-    return usage
+        if line.sauce_id:
+            sauce = db.get(Sauce, line.sauce_id)
+            if sauce is None:
+                raise HTTPException(status_code=400, detail="Sauce is missing from a recipe")
+            sauce_lines = db.scalars(select(SauceLine).where(SauceLine.sauce_id == sauce.id)).all()
+            if not sauce_lines:
+                raise HTTPException(status_code=400, detail=f"{sauce.name} has no ingredients")
+            for sauce_line in sauce_lines:
+                item = get_item(db, sauce_line.item_id)
+                _add_usage(needed, item, qty(sauce_line.quantity) * qty(line.quantity) * servings)
+        elif line.item_id:
+            item = get_item(db, line.item_id)
+            _add_usage(needed, item, qty(line.quantity) * servings)
+        else:
+            raise HTTPException(status_code=400, detail="Recipe line needs an ingredient or a sauce")
+    return list(needed.values())
+
+
+def make_sku(db: Session, name: str) -> str:
+    base = "".join(char for char in name.upper() if char.isalnum())[:8] or "ITEM"
+    sku = base
+    suffix = 1
+    while db.scalar(select(Item).where(Item.sku == sku)):
+        suffix += 1
+        sku = f"{base}{suffix}"
+    return sku
+
+
+def get_or_create_supplier(db: Session, name: str | None) -> Supplier:
+    label = (name or "Walk-in purchase").strip() or "Walk-in purchase"
+    supplier = db.scalar(select(Supplier).where(func.lower(Supplier.name) == label.lower()))
+    if supplier:
+        return supplier
+    supplier = Supplier(name=label)
+    db.add(supplier)
+    db.flush()
+    return supplier
+
+
+def get_or_create_item(
+    db: Session,
+    *,
+    name: str,
+    unit: str,
+    category: str,
+    serving_size: Decimal | None,
+) -> Item:
+    item = db.scalar(select(Item).where(func.lower(Item.name) == name.strip().lower()))
+    if item:
+        if serving_size is not None:
+            item.serving_size = qty(serving_size)
+        return item
+    item = Item(
+        sku=make_sku(db, name),
+        name=name.strip(),
+        category=category,
+        unit=unit,
+        serving_size=qty(serving_size or 1),
+        quantity_on_hand=Decimal("0"),
+        unit_cost=Decimal("0"),
+        active=True,
+    )
+    db.add(item)
+    db.flush()
+    return item
+
+
+def receive_named_purchase(
+    db: Session,
+    *,
+    supplier_name: str | None,
+    invoice_number: str | None,
+    purchased_at: datetime | None,
+    paid: bool,
+    notes: str | None,
+    lines: list[dict],
+) -> Purchase:
+    resolved = []
+    for raw in lines:
+        item = get_or_create_item(
+            db,
+            name=raw["name"],
+            unit=raw.get("unit") or "pcs",
+            category=raw.get("category") or "other",
+            serving_size=raw.get("serving_size"),
+        )
+        quantity = qty(raw["quantity"])
+        if raw.get("unit_cost") is not None:
+            unit_cost = money(raw["unit_cost"])
+        elif raw.get("price") is not None:
+            unit_cost = money(raw["price"])
+        elif raw.get("line_total") is not None:
+            unit_cost = money(Decimal(str(raw["line_total"])) / quantity)
+        else:
+            raise HTTPException(status_code=400, detail=f"Price missing for {item.name}")
+        resolved.append({"item_id": item.id, "quantity": quantity, "unit_cost": unit_cost})
+    supplier = get_or_create_supplier(db, supplier_name)
+    return receive_purchase(
+        db,
+        supplier_id=supplier.id,
+        invoice_number=invoice_number,
+        purchased_at=purchased_at,
+        paid=paid,
+        notes=notes,
+        lines=resolved,
+    )
 
 
 def receive_purchase(

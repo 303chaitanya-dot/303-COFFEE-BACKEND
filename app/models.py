@@ -71,6 +71,21 @@ class AccountType(str, Enum):
     expense = "expense"
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(160), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    name: Mapped[str] = mapped_column(String(120))
+    role: Mapped[str] = mapped_column(String(20), default="staff")
+    phone: Mapped[str | None] = mapped_column(String(40))
+    title: Mapped[str | None] = mapped_column(String(80))
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
 class Supplier(Base):
     __tablename__ = "suppliers"
 
@@ -98,6 +113,7 @@ class Item(Base):
     reorder_point: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
     par_level: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
     unit_cost: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"))
+    serving_size: Mapped[Decimal] = mapped_column(Qty, default=Decimal("1"))
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
@@ -113,6 +129,7 @@ class MenuItem(Base):
     name: Mapped[str] = mapped_column(String(160), unique=True)
     category: Mapped[str] = mapped_column(String(40))
     price: Mapped[Decimal] = mapped_column(Money)
+    petpooja_item_id: Mapped[str | None] = mapped_column(String(80))
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -122,17 +139,42 @@ class MenuItem(Base):
     sale_lines: Mapped[list["SaleLine"]] = relationship(back_populates="menu_item")
 
 
+class Sauce(Base):
+    __tablename__ = "sauces"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), unique=True)
+    active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    lines: Mapped[list["SauceLine"]] = relationship(back_populates="sauce", cascade="all, delete-orphan")
+
+
+class SauceLine(Base):
+    __tablename__ = "sauce_lines"
+    __table_args__ = (UniqueConstraint("sauce_id", "item_id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sauce_id: Mapped[int] = mapped_column(ForeignKey("sauces.id", ondelete="CASCADE"))
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    quantity: Mapped[Decimal] = mapped_column(Qty)
+
+    sauce: Mapped[Sauce] = relationship(back_populates="lines")
+    item: Mapped[Item] = relationship()
+
+
 class RecipeLine(Base):
     __tablename__ = "recipe_lines"
-    __table_args__ = (UniqueConstraint("menu_item_id", "item_id"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     menu_item_id: Mapped[int] = mapped_column(ForeignKey("menu_items.id", ondelete="CASCADE"))
-    item_id: Mapped[int] = mapped_column(ForeignKey("items.id"))
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"))
+    sauce_id: Mapped[int | None] = mapped_column(ForeignKey("sauces.id"))
     quantity: Mapped[Decimal] = mapped_column(Qty)
 
     menu_item: Mapped[MenuItem] = relationship(back_populates="recipe_lines")
     item: Mapped[Item] = relationship(back_populates="recipe_lines")
+    sauce: Mapped[Sauce] = relationship()
 
 
 class StockMovement(Base):
@@ -260,3 +302,49 @@ class JournalLine(Base):
 
     entry: Mapped[JournalEntry] = relationship(back_populates="lines")
     account: Mapped[Account] = relationship(back_populates="lines")
+
+
+class BillUpload(Base):
+    __tablename__ = "bill_uploads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    filename: Mapped[str] = mapped_column(String(240))
+    content_type: Mapped[str | None] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(String(30), default="pending_review")
+    supplier_name: Mapped[str | None] = mapped_column(String(160))
+    invoice_number: Mapped[str | None] = mapped_column(String(80))
+    extracted_json: Mapped[str | None] = mapped_column(Text)
+    notes: Mapped[str | None] = mapped_column(Text)
+    purchase_id: Mapped[int | None] = mapped_column(ForeignKey("purchases.id"))
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    purchase: Mapped[Purchase | None] = relationship()
+    created_by: Mapped[User | None] = relationship()
+
+
+class PetPoojaMapping(Base):
+    __tablename__ = "petpooja_mappings"
+    __table_args__ = (UniqueConstraint("external_item_id", "external_name"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_item_id: Mapped[str | None] = mapped_column(String(80))
+    external_name: Mapped[str] = mapped_column(String(160))
+    menu_item_id: Mapped[int] = mapped_column(ForeignKey("menu_items.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    menu_item: Mapped[MenuItem] = relationship()
+
+
+class PetPoojaOrder(Base):
+    __tablename__ = "petpooja_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    external_order_id: Mapped[str] = mapped_column(String(80), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default="received")
+    raw_payload: Mapped[str] = mapped_column(Text)
+    unmapped_json: Mapped[str | None] = mapped_column(Text)
+    sale_id: Mapped[int | None] = mapped_column(ForeignKey("sales.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    sale: Mapped[Sale | None] = relationship()

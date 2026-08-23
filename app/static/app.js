@@ -1,17 +1,23 @@
 const pages = [
   ["dashboard", "Dashboard"],
   ["inventory", "Inventory"],
-  ["menu", "Menu & recipes"],
+  ["menu", "Dishes"],
+  ["sauces", "Sauces"],
   ["purchases", "Purchases"],
+  ["bills", "Bills"],
   ["sales", "Sales"],
+  ["petpooja", "Pet Pooja"],
   ["waste", "Waste"],
   ["suppliers", "Suppliers"],
   ["accounts", "Accounts"],
+  ["profile", "Profile"],
 ];
 
 const state = {
   page: "dashboard",
   meta: null,
+  user: null,
+  token: localStorage.getItem("cafe_token"),
 };
 
 const app = document.getElementById("app");
@@ -32,15 +38,30 @@ function showToast(message) {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  }
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  const response = await fetch(path, { ...options, headers });
+  if (response.status === 401 && path !== "/api/auth/login") {
+    logout(false);
+    throw new Error("Sign in required");
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(data.detail || "Request failed");
+    throw new Error(typeof data.detail === "string" ? data.detail : "Request failed");
   }
   return data;
+}
+
+function logout(reload = true) {
+  state.token = null;
+  state.user = null;
+  localStorage.removeItem("cafe_token");
+  document.body.classList.add("locked");
+  document.getElementById("login-screen").hidden = false;
+  if (reload) showToast("Signed out");
 }
 
 function optionList(values, selected = "") {
@@ -58,9 +79,13 @@ function setPage(page) {
   const titles = {
     dashboard: ["Operations", "Dashboard", "Today's money, low stock, and what needs a reorder."],
     inventory: ["Stock room", "Inventory", "Ingredients and packaging. Costs update from purchases."],
-    menu: ["Recipes", "Menu", "Each drink pulls stock through its recipe."],
-    purchases: ["Receiving", "Purchases", "Receive stock, update weighted average cost, and post AP."],
+    menu: ["Recipes", "Dishes", "Each dish uses ingredients and sauces. Price used is the recipe cost."],
+    sauces: ["Prep", "Sauces", "A sauce is ingredients in a serving. Dishes can pull a sauce whole."],
+    purchases: ["Receiving", "Purchases", "Type the item name, price, quantity, and serving size used in recipes."],
+    bills: ["Paper trail", "Bills", "Upload a supplier bill. We read the lines; you confirm before stock moves."],
     sales: ["Counter", "Sales", "Ring a ticket. Inventory and COGS post automatically."],
+    petpooja: ["POS", "Pet Pooja", "Map Pet Pooja items to dishes. Incoming orders deduct inventory."],
+    profile: ["People", "Profile", "Your login, role, and cafe staff profiles."],
     waste: ["Loss", "Waste", "Spoilage and mistakes leave the shelf and hit the P&L."],
     suppliers: ["Vendors", "Suppliers", "Roasters, dairy, bakery, and packaging."],
     accounts: ["Ledger", "Accounts", "Double-entry balances and a running profit and loss."],
@@ -119,12 +144,13 @@ async function renderInventory() {
   app.innerHTML = `
     <div class="two">
       ${table(
-        ["SKU", "Item", "On hand", "Unit cost", "Value", "Status"],
+        ["SKU", "Item", "On hand", "Serving", "Unit cost", "Value", "Status"],
         items.map(
           (item) => `<tr class="${item.below_reorder ? "low" : ""}">
             <td>${item.sku}</td>
             <td>${item.name}<div class="muted">${item.category}</div></td>
             <td>${item.quantity_on_hand} ${item.unit}</td>
+            <td>${item.serving_size} ${item.unit}</td>
             <td>${money(item.unit_cost)}</td>
             <td>${money(item.inventory_value)}</td>
             <td>${item.below_reorder ? "Reorder" : "OK"}</td>
@@ -139,6 +165,7 @@ async function renderInventory() {
         <label>Unit<select name="unit">${optionList(state.meta.units)}</select></label>
         <label>Reorder point<input name="reorder_point" type="number" step="0.0001" value="0" /></label>
         <label>Par level<input name="par_level" type="number" step="0.0001" value="0" /></label>
+        <label>Serving size<input name="serving_size" type="number" step="0.0001" value="1" /></label>
         <button class="primary" type="submit">Save item</button>
       </form>
     </div>
@@ -179,7 +206,7 @@ async function renderInventory() {
 }
 
 async function renderMenu() {
-  const [menu, items] = await Promise.all([api("/api/menu"), api("/api/items")]);
+  const [menu, items, sauces] = await Promise.all([api("/api/menu"), api("/api/items"), api("/api/sauces")]);
   app.innerHTML = `
     <div class="two">
       ${table(
@@ -189,7 +216,7 @@ async function renderMenu() {
             <td>${item.name}<div class="muted">${item.category}</div></td>
             <td>${money(item.price)}</td>
             <td>${money(item.recipe_cost)}</td>
-            <td>${item.recipe.map((line) => `${line.quantity} ${line.item_unit} ${line.item_name}`).join("<br>")}</td>
+            <td>${item.recipe.map((line) => `${line.quantity} ${line.unit} ${line.name} · used ${money(line.price_used)}`).join("<br>")}</td>
           </tr>`
         )
       )}
@@ -201,33 +228,43 @@ async function renderMenu() {
         <div class="lines" id="recipe-lines"></div>
         <div class="row">
           <button class="ghost" type="button" id="add-recipe-line">Add ingredient</button>
+          <button class="ghost" type="button" id="add-sauce-line">Add sauce</button>
           <button class="primary" type="submit">Save recipe</button>
         </div>
       </form>
     </div>
   `;
   const lines = document.getElementById("recipe-lines");
-  const addLine = () => {
+  const addLine = (kind = "item") => {
     const row = document.createElement("div");
     row.className = "line";
+    row.dataset.kind = kind;
+    const options =
+      kind === "sauce"
+        ? sauces.map((sauce) => `<option value="${sauce.id}">${sauce.name} · ${money(sauce.recipe_cost)}</option>`).join("")
+        : itemOptions(items);
     row.innerHTML = `
-      <select name="item_id">${itemOptions(items)}</select>
+      <select name="${kind === "sauce" ? "sauce_id" : "item_id"}">${options}</select>
       <input name="quantity" type="number" step="0.0001" placeholder="qty" required />
-      <span class="muted">per serving</span>
+      <span class="muted">${kind === "sauce" ? "sauce servings" : "per serving"}</span>
       <button class="ghost" type="button">Remove</button>
     `;
     row.querySelector("button").addEventListener("click", () => row.remove());
     lines.appendChild(row);
   };
-  document.getElementById("add-recipe-line").addEventListener("click", addLine);
-  addLine();
+  document.getElementById("add-recipe-line").addEventListener("click", () => addLine("item"));
+  document.getElementById("add-sauce-line").addEventListener("click", () => addLine("sauce"));
+  addLine("item");
   document.getElementById("menu-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.target;
-    const recipe = [...form.querySelectorAll(".line")].map((row) => ({
-      item_id: Number(row.querySelector('[name="item_id"]').value),
-      quantity: row.querySelector('[name="quantity"]').value,
-    }));
+    const recipe = [...form.querySelectorAll(".line")].map((row) => {
+      const quantity = row.querySelector('[name="quantity"]').value;
+      if (row.dataset.kind === "sauce") {
+        return { sauce_id: Number(row.querySelector('[name="sauce_id"]').value), quantity };
+      }
+      return { item_id: Number(row.querySelector('[name="item_id"]').value), quantity };
+    });
     await api("/api/menu", {
       method: "POST",
       body: JSON.stringify({
@@ -243,11 +280,7 @@ async function renderMenu() {
 }
 
 async function renderPurchases() {
-  const [purchases, suppliers, items] = await Promise.all([
-    api("/api/purchases"),
-    api("/api/suppliers"),
-    api("/api/items"),
-  ]);
+  const purchases = await api("/api/purchases");
   app.innerHTML = `
     <div class="two">
       ${table(
@@ -263,14 +296,14 @@ async function renderPurchases() {
         )
       )}
       <form class="panel" id="purchase-form">
-        <h3>Receive purchase</h3>
-        <label>Supplier<select name="supplier_id">${suppliers.map((s) => `<option value="${s.id}">${s.name}</option>`).join("")}</select></label>
+        <h3>Manual purchase</h3>
+        <label>Supplier name<input name="supplier_name" placeholder="Walk-in or vendor" /></label>
         <label>Invoice<input name="invoice_number" /></label>
         <label><input type="checkbox" name="paid" /> Paid from cash now</label>
         <div class="lines" id="purchase-lines"></div>
         <div class="row">
-          <button class="ghost" type="button" id="add-purchase-line">Add line</button>
-          <button class="primary" type="submit">Receive stock</button>
+          <button class="ghost" type="button" id="add-purchase-line">Add item</button>
+          <button class="primary" type="submit">Post purchase</button>
         </div>
       </form>
     </div>
@@ -279,10 +312,13 @@ async function renderPurchases() {
   const addLine = () => {
     const row = document.createElement("div");
     row.className = "line";
+    row.style.gridTemplateColumns = "1fr 80px 90px 80px 90px auto";
     row.innerHTML = `
-      <select name="item_id">${itemOptions(items)}</select>
+      <input name="name" placeholder="Item name" required />
       <input name="quantity" type="number" step="0.0001" placeholder="qty" required />
-      <input name="unit_cost" type="number" step="0.01" placeholder="unit cost" required />
+      <input name="price" type="number" step="0.01" placeholder="price" required />
+      <select name="unit">${optionList(state.meta.units)}</select>
+      <input name="serving_size" type="number" step="0.0001" placeholder="serving" />
       <button class="ghost" type="button">Remove</button>
     `;
     row.querySelector("button").addEventListener("click", () => row.remove());
@@ -293,20 +329,22 @@ async function renderPurchases() {
   document.getElementById("purchase-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.target;
-    await api("/api/purchases", {
+    await api("/api/purchases/quick", {
       method: "POST",
       body: JSON.stringify({
-        supplier_id: Number(form.supplier_id.value),
+        supplier_name: form.supplier_name.value || null,
         invoice_number: form.invoice_number.value || null,
         paid: form.paid.checked,
         lines: [...form.querySelectorAll(".line")].map((row) => ({
-          item_id: Number(row.querySelector('[name="item_id"]').value),
+          name: row.querySelector('[name="name"]').value,
           quantity: row.querySelector('[name="quantity"]').value,
-          unit_cost: row.querySelector('[name="unit_cost"]').value,
+          price: row.querySelector('[name="price"]').value,
+          unit: row.querySelector('[name="unit"]').value,
+          serving_size: row.querySelector('[name="serving_size"]').value || null,
         })),
       }),
     });
-    showToast("Purchase received");
+    showToast("Purchase posted");
     render();
   });
   app.querySelectorAll(".pay").forEach((button) => {
@@ -479,15 +517,231 @@ async function renderAccounts() {
   `;
 }
 
+async function renderSauces() {
+  const [sauces, items] = await Promise.all([api("/api/sauces"), api("/api/items")]);
+  app.innerHTML = `
+    <div class="two">
+      ${table(
+        ["Sauce", "Cost / serving", "Ingredients"],
+        sauces.map(
+          (sauce) => `<tr>
+            <td>${sauce.name}</td>
+            <td>${money(sauce.recipe_cost)}</td>
+            <td>${sauce.recipe.map((line) => `${line.quantity} ${line.item_unit} ${line.item_name} · ${money(line.price_used)}`).join("<br>")}</td>
+          </tr>`
+        )
+      )}
+      <form class="panel" id="sauce-form">
+        <h3>Add sauce</h3>
+        <label>Name<input name="name" required /></label>
+        <div class="lines" id="sauce-lines"></div>
+        <div class="row">
+          <button class="ghost" type="button" id="add-sauce-ing">Add ingredient</button>
+          <button class="primary" type="submit">Save sauce</button>
+        </div>
+      </form>
+    </div>
+  `;
+  const lines = document.getElementById("sauce-lines");
+  const addLine = () => {
+    const row = document.createElement("div");
+    row.className = "line";
+    row.innerHTML = `
+      <select name="item_id">${itemOptions(items)}</select>
+      <input name="quantity" type="number" step="0.0001" placeholder="qty / serving" required />
+      <span class="muted">used</span>
+      <button class="ghost" type="button">Remove</button>
+    `;
+    row.querySelector("button").addEventListener("click", () => row.remove());
+    lines.appendChild(row);
+  };
+  document.getElementById("add-sauce-ing").addEventListener("click", addLine);
+  addLine();
+  document.getElementById("sauce-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    await api("/api/sauces", {
+      method: "POST",
+      body: JSON.stringify({
+        name: form.name.value,
+        recipe: [...form.querySelectorAll(".line")].map((row) => ({
+          item_id: Number(row.querySelector('[name="item_id"]').value),
+          quantity: row.querySelector('[name="quantity"]').value,
+        })),
+      }),
+    });
+    showToast("Sauce saved");
+    render();
+  });
+}
+
+async function renderBills() {
+  const bills = await api("/api/bills");
+  app.innerHTML = `
+    <div class="two">
+      ${table(
+        ["File", "Supplier", "Status", "Lines"],
+        bills.map(
+          (bill) => `<tr>
+            <td>${bill.filename}</td>
+            <td>${bill.supplier_name || "—"}</td>
+            <td>${bill.status}${bill.status === "pending_review" ? ` <button class="ghost confirm-bill" data-id="${bill.id}">Post stock</button>` : ""}</td>
+            <td>${(bill.lines || []).map((line) => `${line.quantity} ${line.unit || ""} ${line.name} @ ${line.price}`).join("<br>")}</td>
+          </tr>`
+        )
+      )}
+      <form class="panel" id="bill-form">
+        <h3>Upload bill</h3>
+        <p class="muted">Photo bills need OPENAI_API_KEY. A .txt bill works now: one line like <code>Tomatoes|5|40|kg|30</code>.</p>
+        <label>File<input name="file" type="file" required /></label>
+        <button class="primary" type="submit">Read bill</button>
+      </form>
+    </div>
+  `;
+  document.getElementById("bill-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const file = event.target.file.files[0];
+    const body = new FormData();
+    body.append("file", file);
+    await api("/api/bills", { method: "POST", body });
+    showToast("Bill read — review then post");
+    render();
+  });
+  app.querySelectorAll(".confirm-bill").forEach((button) => {
+    button.addEventListener("click", async () => {
+      await api(`/api/bills/${button.dataset.id}/confirm`, { method: "POST" });
+      showToast("Bill posted to inventory");
+      render();
+    });
+  });
+}
+
+async function renderPetpooja() {
+  const [orders, mappings, menu] = await Promise.all([
+    api("/api/petpooja/orders"),
+    api("/api/petpooja/mappings"),
+    api("/api/menu"),
+  ]);
+  app.innerHTML = `
+    <p class="muted">Pet Pooja sends billed orders to <code>POST /api/integrations/petpooja/orders</code>. Map their item names to dishes so stock comes off automatically.</p>
+    <div class="two">
+      ${table(
+        ["Order", "Status", "Sale"],
+        orders.map((order) => `<tr><td>${order.external_order_id}</td><td>${order.status}</td><td>${order.sale_id || "—"}</td></tr>`)
+      )}
+      <form class="panel" id="map-form">
+        <h3>Map a Pet Pooja item</h3>
+        <label>Pet Pooja name<input name="external_name" required /></label>
+        <label>Pet Pooja item id<input name="external_item_id" /></label>
+        <label>Our dish<select name="menu_item_id">${menu.map((item) => `<option value="${item.id}">${item.name}</option>`).join("")}</select></label>
+        <button class="primary" type="submit">Save mapping</button>
+      </form>
+    </div>
+    <h3>Mappings</h3>
+    ${table(
+      ["Pet Pooja", "ID", "Dish"],
+      mappings.map((row) => `<tr><td>${row.external_name}</td><td>${row.external_item_id || "—"}</td><td>${row.menu_item_name}</td></tr>`)
+    )}
+  `;
+  document.getElementById("map-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    await api("/api/petpooja/mappings", {
+      method: "POST",
+      body: JSON.stringify({
+        external_name: form.get("external_name"),
+        external_item_id: form.get("external_item_id") || null,
+        menu_item_id: Number(form.get("menu_item_id")),
+      }),
+    });
+    showToast("Mapping saved");
+    render();
+  });
+}
+
+async function renderProfile() {
+  const me = state.user;
+  let usersHtml = "";
+  if (me.role === "owner") {
+    const users = await api("/api/auth/users");
+    usersHtml = `
+      ${table(["Name", "Email", "Role"], users.map((user) => `<tr><td>${user.name}</td><td>${user.email}</td><td>${user.role}</td></tr>`))}
+      <form class="panel" id="invite-form">
+        <h3>Add staff profile</h3>
+        <label>Name<input name="name" required /></label>
+        <label>Email<input name="email" type="email" required /></label>
+        <label>Password<input name="password" type="password" required minlength="8" /></label>
+        <label>Role<select name="role">${optionList(["staff", "manager", "owner"])}</select></label>
+        <label>Title<input name="title" /></label>
+        <button class="primary" type="submit">Create profile</button>
+      </form>
+    `;
+  }
+  app.innerHTML = `
+    <div class="two">
+      <form class="panel" id="profile-form">
+        <h3>${me.name}</h3>
+        <p class="muted">${me.email} · ${me.role}</p>
+        <label>Name<input name="name" value="${me.name}" required /></label>
+        <label>Phone<input name="phone" value="${me.phone || ""}" /></label>
+        <label>Title<input name="title" value="${me.title || ""}" /></label>
+        <button class="primary" type="submit">Save profile</button>
+      </form>
+      <form class="panel" id="password-form">
+        <h3>Password</h3>
+        <label>Current<input name="current_password" type="password" required /></label>
+        <label>New<input name="new_password" type="password" required minlength="8" /></label>
+        <button class="primary" type="submit">Change password</button>
+      </form>
+    </div>
+    ${usersHtml}
+  `;
+  document.getElementById("profile-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    state.user = await api("/api/auth/me", {
+      method: "PUT",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())),
+    });
+    document.getElementById("whoami").textContent = `${state.user.name} · ${state.user.role}`;
+    showToast("Profile saved");
+    render();
+  });
+  document.getElementById("password-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await api("/api/auth/me/password", {
+      method: "POST",
+      body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())),
+    });
+    event.target.reset();
+    showToast("Password updated");
+  });
+  const invite = document.getElementById("invite-form");
+  if (invite) {
+    invite.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      await api("/api/auth/users", {
+        method: "POST",
+        body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())),
+      });
+      showToast("Profile created");
+      render();
+    });
+  }
+}
+
 async function render() {
   try {
     if (state.page === "dashboard") return renderDashboard();
     if (state.page === "inventory") return renderInventory();
     if (state.page === "menu") return renderMenu();
+    if (state.page === "sauces") return renderSauces();
     if (state.page === "purchases") return renderPurchases();
+    if (state.page === "bills") return renderBills();
     if (state.page === "sales") return renderSales();
+    if (state.page === "petpooja") return renderPetpooja();
     if (state.page === "waste") return renderWaste();
     if (state.page === "suppliers") return renderSuppliers();
+    if (state.page === "profile") return renderProfile();
     return renderAccounts();
   } catch (error) {
     app.innerHTML = `<div class="panel">${error.message}</div>`;
@@ -495,10 +749,46 @@ async function render() {
   }
 }
 
-async function boot() {
-  renderNav();
+async function enterApp() {
+  document.body.classList.remove("locked");
+  document.getElementById("login-screen").hidden = true;
+  state.user = await api("/api/auth/me");
   state.meta = await api("/api/meta");
+  document.getElementById("whoami").textContent = `${state.user.name} · ${state.user.role}`;
+  renderNav();
   await render();
+}
+
+async function boot() {
+  document.getElementById("signout").addEventListener("click", () => logout());
+  document.getElementById("login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const error = document.getElementById("login-error");
+    error.hidden = true;
+    try {
+      const form = new FormData(event.target);
+      const token = await api("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: form.get("email"), password: form.get("password") }),
+      });
+      state.token = token.access_token;
+      localStorage.setItem("cafe_token", state.token);
+      await enterApp();
+    } catch (err) {
+      error.hidden = false;
+      error.textContent = err.message;
+    }
+  });
+  if (!state.token) {
+    document.body.classList.add("locked");
+    document.getElementById("login-screen").hidden = false;
+    return;
+  }
+  try {
+    await enterApp();
+  } catch (_error) {
+    logout(false);
+  }
 }
 
 boot();

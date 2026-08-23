@@ -30,7 +30,7 @@ def make_engine(url: str):
     return engine
 
 
-engine = make_engine(settings.database_url)
+engine = make_engine(settings.sqlalchemy_url)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
 
 

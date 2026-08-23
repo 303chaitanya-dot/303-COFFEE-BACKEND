@@ -2,7 +2,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ORMModel(BaseModel):
@@ -32,6 +32,7 @@ class ItemIn(BaseModel):
     reorder_point: Decimal = Decimal("0")
     par_level: Decimal = Decimal("0")
     unit_cost: Decimal = Decimal("0")
+    serving_size: Decimal = Decimal("1")
     active: bool = True
 
 
@@ -44,16 +45,26 @@ class ItemOut(ORMModel, ItemIn):
 
 
 class RecipeLineIn(BaseModel):
-    item_id: int
+    item_id: int | None = None
+    sauce_id: int | None = None
     quantity: Decimal = Field(gt=0)
+
+    @model_validator(mode="after")
+    def one_component(self):
+        if bool(self.item_id) == bool(self.sauce_id):
+            raise ValueError("Each recipe line needs either an ingredient or a sauce")
+        return self
 
 
 class RecipeLineOut(ORMModel):
     id: int
-    item_id: int
-    item_name: str
-    item_unit: str
+    kind: str
+    item_id: int | None
+    sauce_id: int | None
+    name: str
+    unit: str
     quantity: Decimal
+    price_used: Decimal
 
 
 class MenuItemIn(BaseModel):
@@ -250,8 +261,138 @@ class MetaOut(BaseModel):
     menu_categories: list[str]
     units: list[str]
     payment_methods: list[str]
+    roles: list[str]
 
 
 class MessageOut(BaseModel):
     status: Literal["ok"] = "ok"
     detail: str
+
+
+class LoginIn(BaseModel):
+    email: str
+    password: str
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class ProfileIn(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    phone: str | None = None
+    title: str | None = None
+
+
+class PasswordIn(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8)
+
+
+class UserCreateIn(BaseModel):
+    email: str
+    password: str = Field(min_length=8)
+    name: str = Field(min_length=1, max_length=120)
+    role: str = "staff"
+    phone: str | None = None
+    title: str | None = None
+
+
+class UserOut(ORMModel):
+    id: int
+    email: str
+    name: str
+    role: str
+    phone: str | None
+    title: str | None
+    active: bool
+    created_at: datetime
+
+
+class SauceLineIn(BaseModel):
+    item_id: int
+    quantity: Decimal = Field(gt=0)
+
+
+class SauceLineOut(ORMModel):
+    id: int
+    item_id: int
+    item_name: str
+    item_unit: str
+    quantity: Decimal
+    price_used: Decimal
+
+
+class SauceIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    active: bool = True
+    recipe: list[SauceLineIn] = Field(min_length=1)
+
+
+class SauceOut(ORMModel):
+    id: int
+    name: str
+    active: bool
+    recipe_cost: Decimal
+    recipe: list[SauceLineOut]
+    created_at: datetime
+
+
+class NamedPurchaseLineIn(BaseModel):
+    name: str = Field(min_length=1)
+    quantity: Decimal = Field(gt=0)
+    price: Decimal = Field(ge=0)
+    unit: str = "pcs"
+    category: str = "other"
+    serving_size: Decimal | None = None
+
+
+class NamedPurchaseIn(BaseModel):
+    supplier_name: str | None = None
+    invoice_number: str | None = None
+    paid: bool = False
+    notes: str | None = None
+    lines: list[NamedPurchaseLineIn] = Field(min_length=1)
+
+
+class BillOut(ORMModel):
+    id: int
+    filename: str
+    status: str
+    supplier_name: str | None
+    invoice_number: str | None
+    notes: str | None
+    lines: list[dict]
+    purchase_id: int | None
+    created_at: datetime
+
+
+class BillReviewIn(BaseModel):
+    supplier_name: str | None = None
+    invoice_number: str | None = None
+    notes: str | None = None
+    lines: list[NamedPurchaseLineIn]
+
+
+class PetPoojaMapIn(BaseModel):
+    external_item_id: str | None = None
+    external_name: str = Field(min_length=1)
+    menu_item_id: int
+
+
+class PetPoojaMapOut(ORMModel):
+    id: int
+    external_item_id: str | None
+    external_name: str
+    menu_item_id: int
+    menu_item_name: str
+
+
+class PetPoojaOrderOut(ORMModel):
+    id: int
+    external_order_id: str
+    status: str
+    unmapped: list[dict]
+    sale_id: int | None
+    created_at: datetime

@@ -9,6 +9,7 @@ from app.schemas import (
     AdjustmentIn,
     MessageOut,
     MovementOut,
+    NamedPurchaseIn,
     PurchaseIn,
     PurchaseOut,
     SaleIn,
@@ -16,7 +17,14 @@ from app.schemas import (
     WasteIn,
     WasteOut,
 )
-from app.services.inventory import adjust_stock, mark_purchase_paid, receive_purchase, record_sale, record_waste
+from app.services.inventory import (
+    adjust_stock,
+    mark_purchase_paid,
+    receive_named_purchase,
+    receive_purchase,
+    record_sale,
+    record_waste,
+)
 
 router = APIRouter()
 
@@ -37,6 +45,22 @@ def create_purchase(payload: PurchaseIn, db: Session = Depends(get_db)) -> Purch
         supplier_id=payload.supplier_id,
         invoice_number=payload.invoice_number,
         purchased_at=payload.purchased_at,
+        paid=payload.paid,
+        notes=payload.notes,
+        lines=[line.model_dump() for line in payload.lines],
+    )
+    db.commit()
+    purchase = db.scalar(select(Purchase).options(*PURCHASE_LOAD).where(Purchase.id == purchase.id))
+    return present_purchase(purchase)
+
+
+@router.post("/purchases/quick", response_model=PurchaseOut, status_code=201)
+def create_named_purchase(payload: NamedPurchaseIn, db: Session = Depends(get_db)) -> PurchaseOut:
+    purchase = receive_named_purchase(
+        db,
+        supplier_name=payload.supplier_name,
+        invoice_number=payload.invoice_number,
+        purchased_at=None,
         paid=payload.paid,
         notes=payload.notes,
         lines=[line.model_dump() for line in payload.lines],

@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import Item, ItemCategory, MenuCategory, MenuItem, RecipeLine, Supplier, Unit
-from app.presenters import present_item, present_menu_item, present_supplier
-from app.schemas import ItemIn, ItemOut, MenuItemIn, MenuItemOut, SupplierIn, SupplierOut
+from app.models import Item, ItemCategory, Supplier, Unit
+from app.presenters import present_item, present_supplier
+from app.schemas import ItemIn, ItemOut, SupplierIn, SupplierOut
 
 router = APIRouter()
 
@@ -79,52 +79,3 @@ def update_item(item_id: int, payload: ItemIn, db: Session = Depends(get_db)) ->
     return present_item(item)
 
 
-@router.get("/menu", response_model=list[MenuItemOut])
-def list_menu(db: Session = Depends(get_db)) -> list[MenuItemOut]:
-    rows = db.scalars(
-        select(MenuItem).options(selectinload(MenuItem.recipe_lines)).order_by(MenuItem.category, MenuItem.name)
-    ).all()
-    return [present_menu_item(db, row) for row in rows]
-
-
-def _replace_recipe(db: Session, menu_item: MenuItem, recipe: list) -> None:
-    menu_item.recipe_lines.clear()
-    db.flush()
-    for line in recipe:
-        db.add(RecipeLine(menu_item_id=menu_item.id, item_id=line.item_id, quantity=line.quantity))
-
-
-@router.post("/menu", response_model=MenuItemOut, status_code=201)
-def create_menu_item(payload: MenuItemIn, db: Session = Depends(get_db)) -> MenuItemOut:
-    if payload.category not in {item.value for item in MenuCategory}:
-        raise HTTPException(status_code=400, detail="Invalid menu category")
-    if db.scalar(select(MenuItem).where(MenuItem.name == payload.name)):
-        raise HTTPException(status_code=409, detail="Menu item already exists")
-    menu_item = MenuItem(name=payload.name, category=payload.category, price=payload.price, active=payload.active)
-    db.add(menu_item)
-    db.flush()
-    _replace_recipe(db, menu_item, payload.recipe)
-    db.commit()
-    menu_item = db.scalar(
-        select(MenuItem).options(selectinload(MenuItem.recipe_lines)).where(MenuItem.id == menu_item.id)
-    )
-    return present_menu_item(db, menu_item)
-
-
-@router.put("/menu/{menu_item_id}", response_model=MenuItemOut)
-def update_menu_item(menu_item_id: int, payload: MenuItemIn, db: Session = Depends(get_db)) -> MenuItemOut:
-    menu_item = db.scalar(
-        select(MenuItem).options(selectinload(MenuItem.recipe_lines)).where(MenuItem.id == menu_item_id)
-    )
-    if menu_item is None:
-        raise HTTPException(status_code=404, detail="Menu item not found")
-    menu_item.name = payload.name
-    menu_item.category = payload.category
-    menu_item.price = payload.price
-    menu_item.active = payload.active
-    _replace_recipe(db, menu_item, payload.recipe)
-    db.commit()
-    menu_item = db.scalar(
-        select(MenuItem).options(selectinload(MenuItem.recipe_lines)).where(MenuItem.id == menu_item_id)
-    )
-    return present_menu_item(db, menu_item)

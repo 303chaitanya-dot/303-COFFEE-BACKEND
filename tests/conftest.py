@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import settings
 from app.db import Base, configure_database
 from app.models import Item, MenuItem, RecipeLine, Supplier
 from app.services.ledger import ensure_chart_of_accounts
@@ -57,4 +58,10 @@ def client(tmp_path: Path) -> Generator[TestClient, None, None]:
     from app.main import app
 
     with TestClient(app) as test_client:
+        token = test_client.post(
+            "/api/auth/login",
+            json={"email": settings.admin_email, "password": settings.admin_password},
+        )
+        assert token.status_code == 200, token.text
+        test_client.headers.update({"Authorization": f"Bearer {token.json()['access_token']}"})
         yield test_client

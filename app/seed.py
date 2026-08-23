@@ -3,7 +3,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models import Item, MenuItem, RecipeLine, Supplier
+from app.models import Item, MenuItem, PetPoojaMapping, RecipeLine, Sauce, SauceLine, Supplier
 from app.services.inventory import receive_purchase, record_sale
 from app.services.ledger import ensure_chart_of_accounts, post_entry
 
@@ -41,6 +41,7 @@ def seed_if_empty(db: Session) -> None:
             name="House espresso beans",
             category="coffee",
             unit="g",
+            serving_size=Decimal("18"),
             reorder_point=2000,
             par_level=8000,
         ),
@@ -49,21 +50,79 @@ def seed_if_empty(db: Session) -> None:
             name="Filter coffee beans",
             category="coffee",
             unit="g",
+            serving_size=Decimal("18"),
             reorder_point=1000,
             par_level=4000,
         ),
-        "MILK": Item(sku="MILK", name="Whole milk", category="dairy", unit="ml", reorder_point=8000, par_level=20000),
-        "OAT": Item(sku="OAT", name="Oat milk", category="dairy", unit="ml", reorder_point=2000, par_level=6000),
-        "SYRUP": Item(sku="SYRUP", name="Vanilla syrup", category="dry_goods", unit="ml", reorder_point=400, par_level=1500),
-        "CHOCO": Item(sku="CHOCO", name="Chocolate sauce", category="dry_goods", unit="ml", reorder_point=400, par_level=1200),
-        "CHAI": Item(sku="CHAI", name="Masala chai concentrate", category="beverages", unit="ml", reorder_point=800, par_level=2500),
-        "CUP12": Item(sku="CUP12", name="12oz paper cup", category="packaging", unit="pcs", reorder_point=100, par_level=400),
-        "LID12": Item(sku="LID12", name="12oz lid", category="packaging", unit="pcs", reorder_point=100, par_level=400),
+        "MILK": Item(
+            sku="MILK",
+            name="Whole milk",
+            category="dairy",
+            unit="ml",
+            serving_size=Decimal("220"),
+            reorder_point=8000,
+            par_level=20000,
+        ),
+        "OAT": Item(
+            sku="OAT",
+            name="Oat milk",
+            category="dairy",
+            unit="ml",
+            serving_size=Decimal("220"),
+            reorder_point=2000,
+            par_level=6000,
+        ),
+        "SYRUP": Item(
+            sku="SYRUP",
+            name="Vanilla syrup",
+            category="dry_goods",
+            unit="ml",
+            serving_size=Decimal("15"),
+            reorder_point=400,
+            par_level=1500,
+        ),
+        "CHOCO": Item(
+            sku="CHOCO",
+            name="Chocolate sauce",
+            category="dry_goods",
+            unit="ml",
+            serving_size=Decimal("25"),
+            reorder_point=400,
+            par_level=1200,
+        ),
+        "CHAI": Item(
+            sku="CHAI",
+            name="Masala chai concentrate",
+            category="beverages",
+            unit="ml",
+            serving_size=Decimal("80"),
+            reorder_point=800,
+            par_level=2500,
+        ),
+        "CUP12": Item(
+            sku="CUP12",
+            name="12oz paper cup",
+            category="packaging",
+            unit="pcs",
+            serving_size=Decimal("1"),
+            reorder_point=100,
+            par_level=400,
+        ),
+        "LID12": Item(
+            sku="LID12",
+            name="12oz lid",
+            category="packaging",
+            unit="pcs",
+            serving_size=Decimal("1"),
+            reorder_point=100,
+            par_level=400,
+        ),
         "CROISSANT": Item(
             sku="CROISSANT",
             name="Butter croissant",
             category="bakery",
             unit="pcs",
+            serving_size=Decimal("1"),
             reorder_point=6,
             par_level=24,
         ),
@@ -191,7 +250,13 @@ def seed_if_empty(db: Session) -> None:
             db.add(RecipeLine(menu_item_id=menu_item.id, item_id=items[sku].id, quantity=Decimal(quantity)))
 
     db.flush()
+    mocha_sauce = Sauce(name="House mocha sauce", active=True)
+    db.add(mocha_sauce)
+    db.flush()
+    db.add(SauceLine(sauce_id=mocha_sauce.id, item_id=items["CHOCO"].id, quantity=Decimal("25")))
     latte = db.scalar(select(MenuItem).where(MenuItem.name == "Latte"))
+    if latte:
+        db.add(PetPoojaMapping(external_item_id="PP-LATTE", external_name="Latte", menu_item_id=latte.id))
     croissant = db.scalar(select(MenuItem).where(MenuItem.name == "Butter croissant"))
     filter_coffee = db.scalar(select(MenuItem).where(MenuItem.name == "Filter coffee"))
     record_sale(

@@ -13,21 +13,38 @@
     <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
-    <aside class="sidebar">
-      <p class="eyebrow">303 Coffee</p>
-      <h1>Back office</h1>
-      <nav id="nav"></nav>
-    </aside>
-    <main>
-      <header class="topbar">
-        <div>
-          <p class="eyebrow" id="page-kicker">Operations</p>
-          <h2 id="page-title">Dashboard</h2>
+    <section id="login-screen" class="login-screen" hidden>
+      <form id="login-form" class="panel login-card">
+        <p class="eyebrow">303 Coffee</p>
+        <h1>Sign in</h1>
+        <p class="muted">Staff profiles keep purchases, bills, and recipes accountable.</p>
+        <label>Email<input name="email" type="email" required autocomplete="username" /></label>
+        <label>Password<input name="password" type="password" required autocomplete="current-password" /></label>
+        <button class="primary" type="submit">Enter back office</button>
+        <p id="login-error" class="low" hidden></p>
+      </form>
+    </section>
+    <div id="shell">
+      <aside class="sidebar">
+        <p class="eyebrow">303 Coffee</p>
+        <h1>Back office</h1>
+        <nav id="nav"></nav>
+        <div class="profile-box">
+          <p id="whoami" class="muted">—</p>
+          <button class="ghost" id="signout" type="button">Sign out</button>
         </div>
-        <p class="hint" id="page-hint">Stock, recipes, purchases, and the ledger in one place.</p>
-      </header>
-      <section id="app"></section>
-    </main>
+      </aside>
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="page-kicker">Operations</p>
+            <h2 id="page-title">Dashboard</h2>
+          </div>
+          <p class="hint" id="page-hint">Stock, recipes, purchases, and the ledger in one place.</p>
+        </header>
+        <section id="app"></section>
+      </main>
+    </div>
     <div id="toast" hidden></div>
     <script src="/static/app.js"></script>
   </body>

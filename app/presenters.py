@@ -4,31 +4,43 @@ from sqlalchemy.orm import Session
 
 from app.models import (
     Account,
+    BillUpload,
     Item,
     JournalEntry,
     MenuItem,
+    PetPoojaMapping,
+    PetPoojaOrder,
     Purchase,
     Sale,
+    Sauce,
     StockMovement,
     Supplier,
+    User,
     WasteEvent,
 )
 from app.schemas import (
     AccountOut,
+    BillOut,
     ItemOut,
     JournalEntryOut,
     JournalLineOut,
     MenuItemOut,
     MovementOut,
+    PetPoojaMapOut,
+    PetPoojaOrderOut,
     PurchaseLineOut,
     PurchaseOut,
     RecipeLineOut,
     SaleLineOut,
     SaleOut,
+    SauceLineOut,
+    SauceOut,
     SupplierOut,
+    UserOut,
     WasteOut,
 )
-from app.services.inventory import item_value, purchase_total, qty, recipe_cost, sale_cogs, sale_total
+from app.services.bills import extracted_lines
+from app.services.inventory import item_value, line_price_used, purchase_total, qty, recipe_cost, sale_cogs, sale_total, sauce_cost
 from app.services.ledger import account_balance, money
 
 
@@ -48,6 +60,7 @@ def present_item(item: Item) -> ItemOut:
         reorder_point=qty(item.reorder_point),
         par_level=qty(item.par_level),
         unit_cost=money(item.unit_cost),
+        serving_size=qty(item.serving_size),
         active=item.active,
         inventory_value=item_value(item),
         below_reorder=on_hand <= qty(item.reorder_point),
@@ -59,16 +72,34 @@ def present_item(item: Item) -> ItemOut:
 def present_menu_item(db: Session, menu_item: MenuItem) -> MenuItemOut:
     recipe = []
     for line in menu_item.recipe_lines:
-        item = db.get(Item, line.item_id)
-        recipe.append(
-            RecipeLineOut(
-                id=line.id,
-                item_id=line.item_id,
-                item_name=item.name if item else "Unknown",
-                item_unit=item.unit if item else "",
-                quantity=qty(line.quantity),
+        if line.sauce_id:
+            sauce = line.sauce or db.get(Sauce, line.sauce_id)
+            recipe.append(
+                RecipeLineOut(
+                    id=line.id,
+                    kind="sauce",
+                    item_id=None,
+                    sauce_id=line.sauce_id,
+                    name=sauce.name if sauce else "Unknown sauce",
+                    unit="serving",
+                    quantity=qty(line.quantity),
+                    price_used=line_price_used(db, line),
+                )
             )
-        )
+        else:
+            item = db.get(Item, line.item_id) if line.item_id else None
+            recipe.append(
+                RecipeLineOut(
+                    id=line.id,
+                    kind="item",
+                    item_id=line.item_id,
+                    sauce_id=None,
+                    name=item.name if item else "Unknown",
+                    unit=item.unit if item else "",
+                    quantity=qty(line.quantity),
+                    price_used=line_price_used(db, line),
+                )
+            )
     return MenuItemOut(
         id=menu_item.id,
         name=menu_item.name,
@@ -190,4 +221,69 @@ def present_movement(movement: StockMovement) -> MovementOut:
         ref_id=movement.ref_id,
         note=movement.note,
         created_at=movement.created_at,
+    )
+
+
+def present_user(user: User) -> UserOut:
+    return UserOut.model_validate(user)
+
+
+def present_sauce(db: Session, sauce: Sauce) -> SauceOut:
+    recipe = []
+    for line in sauce.lines:
+        item = line.item or db.get(Item, line.item_id)
+        recipe.append(
+            SauceLineOut(
+                id=line.id,
+                item_id=line.item_id,
+                item_name=item.name if item else "Unknown",
+                item_unit=item.unit if item else "",
+                quantity=qty(line.quantity),
+                price_used=money(qty(line.quantity) * Decimal(item.unit_cost)) if item else money(0),
+            )
+        )
+    return SauceOut(
+        id=sauce.id,
+        name=sauce.name,
+        active=sauce.active,
+        recipe_cost=sauce_cost(db, sauce),
+        recipe=recipe,
+        created_at=sauce.created_at,
+    )
+
+
+def present_bill(bill: BillUpload) -> BillOut:
+    return BillOut(
+        id=bill.id,
+        filename=bill.filename,
+        status=bill.status,
+        supplier_name=bill.supplier_name,
+        invoice_number=bill.invoice_number,
+        notes=bill.notes,
+        lines=extracted_lines(bill),
+        purchase_id=bill.purchase_id,
+        created_at=bill.created_at,
+    )
+
+
+def present_mapping(mapping: PetPoojaMapping) -> PetPoojaMapOut:
+    return PetPoojaMapOut(
+        id=mapping.id,
+        external_item_id=mapping.external_item_id,
+        external_name=mapping.external_name,
+        menu_item_id=mapping.menu_item_id,
+        menu_item_name=mapping.menu_item.name,
+    )
+
+
+def present_petpooja_order(order: PetPoojaOrder) -> PetPoojaOrderOut:
+    import json
+
+    return PetPoojaOrderOut(
+        id=order.id,
+        external_order_id=order.external_order_id,
+        status=order.status,
+        unmapped=json.loads(order.unmapped_json) if order.unmapped_json else [],
+        sale_id=order.sale_id,
+        created_at=order.created_at,
     )

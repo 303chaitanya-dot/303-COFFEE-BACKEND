@@ -248,6 +248,35 @@ button.ghost {
   color: var(--muted);
 }
 
+.login-screen {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(circle at top left, rgba(217, 120, 74, 0.16), transparent 28%),
+    var(--bg);
+  z-index: 20;
+}
+
+.login-card {
+  width: min(420px, calc(100vw - 32px));
+}
+
+.login-card h1 {
+  margin: 8px 0 0;
+}
+
+.profile-box {
+  margin-top: 28px;
+  display: grid;
+  gap: 10px;
+}
+
+body.locked #shell {
+  display: none;
+}
+
 @media (max-width: 960px) {
   body {
     grid-template-columns: 1fr;
