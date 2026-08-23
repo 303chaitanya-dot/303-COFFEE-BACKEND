@@ -2,6 +2,13 @@ from sqlalchemy import inspect, text
 
 
 def ensure_columns(engine) -> None:
+    try:
+        _ensure_columns(engine)
+    except Exception as exc:
+        print(f"ensure_columns skipped: {exc}")
+
+
+def _ensure_columns(engine) -> None:
     inspector = inspect(engine)
     tables = set(inspector.get_table_names())
     statements = []
@@ -43,9 +50,9 @@ def ensure_columns(engine) -> None:
                     text(
                         """
                         INSERT INTO stock_lots (item_id, quantity, expiry_date, received_at)
-                        SELECT id, quantity_on_hand, expiry_date, created_at
+                        SELECT id, quantity_on_hand, expiry_date, COALESCE(created_at, CURRENT_TIMESTAMP)
                         FROM items
-                        WHERE quantity_on_hand > 0
+                        WHERE quantity_on_hand IS NOT NULL AND quantity_on_hand > 0
                         """
                     )
                 )

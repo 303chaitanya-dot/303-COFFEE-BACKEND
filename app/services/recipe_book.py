@@ -4,7 +4,6 @@ from decimal import Decimal
 
 import httpx
 from fastapi import HTTPException
-from openpyxl import load_workbook
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -388,6 +387,8 @@ def parse_recipe_sheets(workbook) -> list[dict]:
 
 def parse_recipe_workbook(content: bytes) -> tuple[list[dict], list[dict]]:
     try:
+        from openpyxl import load_workbook
+
         workbook = load_workbook(io.BytesIO(content), data_only=True)
     except Exception as error:
         raise HTTPException(status_code=400, detail="Could not read the recipe workbook") from error

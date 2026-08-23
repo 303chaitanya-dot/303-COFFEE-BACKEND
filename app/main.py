@@ -20,14 +20,17 @@ AUTH = [Depends(get_current_user)]
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    database.Base.metadata.create_all(bind=database.engine)
-    ensure_columns(database.engine)
-    db = database.SessionLocal()
     try:
-        seed_if_empty(db)
-        ensure_admin_user(db)
-    finally:
-        db.close()
+        database.Base.metadata.create_all(bind=database.engine)
+        ensure_columns(database.engine)
+        db = database.SessionLocal()
+        try:
+            seed_if_empty(db)
+            ensure_admin_user(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        print(f"startup migration warning: {exc}")
     yield
 
 
