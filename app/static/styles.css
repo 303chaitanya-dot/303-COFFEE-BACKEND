@@ -23,13 +23,17 @@ body {
 }
 
 body {
-  display: grid;
-  grid-template-columns: 240px 1fr;
   background:
     radial-gradient(circle at top left, rgba(217, 120, 74, 0.16), transparent 28%),
     var(--bg);
   color: var(--text);
   font-family: Outfit, sans-serif;
+}
+
+#shell {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  min-height: 100vh;
 }
 
 h1,
@@ -81,6 +85,7 @@ nav button:hover {
 }
 
 main {
+  min-width: 0;
   padding: 28px 32px 48px;
 }
 
@@ -282,7 +287,7 @@ body.locked #shell {
 }
 
 @media (max-width: 960px) {
-  body {
+  #shell {
     grid-template-columns: 1fr;
   }
 
