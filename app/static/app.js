@@ -1232,6 +1232,7 @@ async function renderProfile() {
 }
 
 async function render() {
+  app.innerHTML = `<div class="panel muted">Loading…</div>`;
   try {
     if (state.page === "dashboard") return renderDashboard();
     if (state.page === "inventory") return renderInventory();

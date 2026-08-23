@@ -22,15 +22,17 @@ AUTH = [Depends(get_current_user)]
 async def lifespan(_app: FastAPI):
     try:
         database.Base.metadata.create_all(bind=database.engine)
-        ensure_columns(database.engine)
-        db = database.SessionLocal()
-        try:
-            seed_if_empty(db)
-            ensure_admin_user(db)
-        finally:
-            db.close()
     except Exception as exc:
-        print(f"startup migration warning: {exc}")
+        print(f"create_all warning: {exc}")
+    ensure_columns(database.engine)
+    db = database.SessionLocal()
+    try:
+        seed_if_empty(db)
+        ensure_admin_user(db)
+    except Exception as exc:
+        print(f"startup seed warning: {exc}")
+    finally:
+        db.close()
     yield
 
 
