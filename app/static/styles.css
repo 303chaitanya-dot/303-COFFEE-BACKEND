@@ -51,15 +51,14 @@ h3,
 
 .brand-logo {
   display: block;
-  width: 100%;
-  max-width: 196px;
+  width: 168px;
   height: auto;
-  margin: 0 0 16px;
+  margin: 0 0 14px;
 }
 
 .login-card .brand-logo {
-  max-width: 260px;
-  margin-bottom: 18px;
+  width: 200px;
+  margin: 0 auto 18px;
 }
 
 .sidebar h1 {
