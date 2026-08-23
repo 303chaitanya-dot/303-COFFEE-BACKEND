@@ -5,7 +5,8 @@ from sqlalchemy.orm import Session, selectinload
 from app.db import get_db
 from app.models import Item, MenuCategory, MenuItem, RecipeLine, Sauce, SauceLine
 from app.presenters import present_menu_item, present_sauce
-from app.schemas import MenuItemIn, MenuItemOut, SauceIn, SauceOut
+from app.schemas import MenuItemIn, MenuItemOut, MessageOut, SauceIn, SauceOut
+from app.services.recipe_book import split_prep_menu_items
 
 router = APIRouter()
 
@@ -33,6 +34,7 @@ def _replace_dish_recipe(db: Session, menu_item: MenuItem, recipe: list) -> None
                 item_id=line.item_id,
                 sauce_id=line.sauce_id,
                 quantity=line.quantity,
+                unit=line.unit,
             )
         )
 
@@ -67,6 +69,25 @@ def update_sauce(sauce_id: int, payload: SauceIn, db: Session = Depends(get_db))
     db.commit()
     sauce = db.scalar(select(Sauce).options(selectinload(Sauce.lines)).where(Sauce.id == sauce_id))
     return present_sauce(db, sauce)
+
+
+@router.post("/sauces/from-dishes", response_model=MessageOut)
+def collect_sauces_from_dishes(db: Session = Depends(get_db)) -> MessageOut:
+    moved = split_prep_menu_items(db)
+    db.commit()
+    return MessageOut(detail=f"Moved {moved} sauces and marinades out of dishes")
+
+
+@router.delete("/sauces/{sauce_id}", response_model=MessageOut)
+def remove_sauce(sauce_id: int, db: Session = Depends(get_db)) -> MessageOut:
+    sauce = db.get(Sauce, sauce_id)
+    if sauce is None:
+        raise HTTPException(status_code=404, detail="Sauce not found")
+    for line in db.scalars(select(RecipeLine).where(RecipeLine.sauce_id == sauce_id)).all():
+        db.delete(line)
+    db.delete(sauce)
+    db.commit()
+    return MessageOut(detail=f"Removed {sauce.name}")
 
 
 @router.get("/menu", response_model=list[MenuItemOut])

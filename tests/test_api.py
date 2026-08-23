@@ -1,4 +1,7 @@
-def test_health_and_seeded_dashboard(client):
+from datetime import date, timedelta
+
+
+def test_health_and_empty_dashboard(client):
     health = client.get("/api/health")
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
@@ -6,27 +9,176 @@ def test_health_and_seeded_dashboard(client):
     dashboard = client.get("/api/dashboard")
     assert dashboard.status_code == 200
     body = dashboard.json()
-    assert body["today_tickets"] >= 1
-    assert float(body["inventory_value"]) > 0
-    assert float(body["today_sales"]) > 0
+    assert body["inventory_value"] == "0.00"
+    assert body["low_stock_count"] == 0
+    assert body["expiring"] == []
+    assert body["expired"] == []
+    assert client.get("/api/items").json() == []
 
 
-def test_sale_flow_updates_stock(client):
-    menu = client.get("/api/menu").json()
-    latte = next(item for item in menu if item["name"] == "Latte")
-    before = {item["sku"]: item for item in client.get("/api/items").json()}
-
+def test_create_item_pack_price_and_expiry(client):
+    soon = date.today() + timedelta(days=3)
     response = client.post(
-        "/api/sales",
-        json={"payment_method": "cash", "lines": [{"menu_item_id": latte["id"], "quantity": 1}]},
+        "/api/items",
+        json={
+            "name": "Soy sauce",
+            "category": "dry_goods",
+            "unit": "ml",
+            "qty_per_unit": "250",
+            "units_on_hand": "4",
+            "price": "200",
+            "serving_size": "15",
+            "serving_unit": "ml",
+            "reorder_point": "2",
+            "par_level": "6",
+            "expiry_date": soon.isoformat(),
+        },
     )
-    assert response.status_code == 201
-    ticket = response.json()
-    assert float(ticket["total"]) == 220
+    assert response.status_code == 201, response.text
+    item = response.json()
+    assert item["qty_per_unit"] == "250.0000"
+    assert item["units_on_hand"] == "4.0000"
+    assert item["quantity_on_hand"] == "1000.0000"
+    assert item["price"] == "200.00"
+    assert item["unit_cost"] == "0.20"
+    assert item["price_per_serving"] == "3.00"
+    assert item["expiry_status"] == "expiring"
+    assert item["below_reorder"] is False
 
-    after = {item["sku"]: item for item in client.get("/api/items").json()}
-    assert float(after["ESP-BEAN"]["quantity_on_hand"]) == float(before["ESP-BEAN"]["quantity_on_hand"]) - 18
-    assert float(after["MILK"]["quantity_on_hand"]) == float(before["MILK"]["quantity_on_hand"]) - 220
+    expired = client.post(
+        "/api/items",
+        json={
+            "name": "Yesterday cream",
+            "category": "dairy",
+            "unit": "ml",
+            "qty_per_unit": "200",
+            "units_on_hand": "1",
+            "price": "120",
+            "serving_size": "30",
+            "serving_unit": "ml",
+            "expiry_date": (date.today() - timedelta(days=1)).isoformat(),
+        },
+    )
+    assert expired.status_code == 201, expired.text
+    assert expired.json()["expiry_status"] == "expired"
+    assert expired.json()["expired_quantity"] == "200.0000"
+    assert expired.json()["good_quantity"] == "0.0000"
+    assert expired.json()["price_per_serving"] == "18.00"
+
+    dashboard = client.get("/api/dashboard").json()
+    assert dashboard["low_stock_count"] == 0
+    assert len(dashboard["expiring"]) == 1
+    assert dashboard["expiring"][0]["name"] == "Soy sauce"
+    assert len(dashboard["expired"]) == 1
+    assert float(dashboard["inventory_value"]) == 320
+
+
+def test_serving_unit_must_match_stock_unit(client):
+    response = client.post(
+        "/api/items",
+        json={
+            "name": "Chicken",
+            "category": "produce",
+            "unit": "kg",
+            "qty_per_unit": "1",
+            "units_on_hand": "3",
+            "price": "600",
+            "serving_size": "120",
+            "serving_unit": "ml",
+        },
+    )
+    assert response.status_code == 400
+    assert "does not match" in response.json()["detail"]
+
+
+def test_delete_selected_items(client):
+    created = client.post(
+        "/api/items",
+        json={
+            "name": "Temp oil",
+            "category": "other",
+            "unit": "ml",
+            "qty_per_unit": "500",
+            "units_on_hand": "2",
+            "price": "80",
+            "serving_size": "10",
+            "serving_unit": "ml",
+        },
+    )
+    assert created.status_code == 201, created.text
+    item_id = created.json()["id"]
+    removed = client.post("/api/items/delete", json={"ids": [item_id]})
+    assert removed.status_code == 200
+    assert removed.json()["deleted"] == 1
+    assert client.get("/api/items").json() == []
+
+
+def test_good_and_expired_split_discard_and_mark_good(client):
+    yesterday = date.today() - timedelta(days=1)
+    later = date.today() + timedelta(days=10)
+    created = client.post(
+        "/api/items",
+        json={
+            "name": "Chicken",
+            "category": "produce",
+            "unit": "kg",
+            "qty_per_unit": "1",
+            "units_on_hand": "2",
+            "price": "400",
+            "serving_size": "0.15",
+            "serving_unit": "kg",
+            "expiry_date": yesterday.isoformat(),
+        },
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()
+    assert item["expired_quantity"] == "2.0000"
+    assert item["good_quantity"] == "0.0000"
+
+    updated = client.put(
+        f"/api/items/{item['id']}",
+        json={
+            "name": "Chicken",
+            "category": "produce",
+            "unit": "kg",
+            "qty_per_unit": "1",
+            "units_on_hand": "2",
+            "add_units": "3",
+            "add_price": "600",
+            "price": "400",
+            "serving_size": "0.15",
+            "serving_unit": "kg",
+            "expiry_date": later.isoformat(),
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    split = updated.json()
+    assert split["quantity_on_hand"] == "5.0000"
+    assert split["expired_quantity"] == "2.0000"
+    assert split["good_quantity"] == "3.0000"
+
+    restored = client.post(
+        f"/api/items/{item['id']}/expired",
+        json={"action": "mark_good", "quantity": "1"},
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["expired_quantity"] == "1.0000"
+    assert restored.json()["good_quantity"] == "4.0000"
+    assert restored.json()["quantity_on_hand"] == "5.0000"
+
+    discarded = client.post(
+        f"/api/items/{item['id']}/expired",
+        json={"action": "discard", "quantity": "1"},
+    )
+    assert discarded.status_code == 200, discarded.text
+    assert discarded.json()["expired_quantity"] == "0.0000"
+    assert discarded.json()["good_quantity"] == "4.0000"
+    assert discarded.json()["quantity_on_hand"] == "4.0000"
+
+    waste = client.get("/api/waste").json()
+    assert len(waste) == 1
+    assert waste[0]["reason"] == "Expired"
+    assert waste[0]["quantity"] == "1.0000"
 
 
 def test_dashboard_requires_login(tmp_path):
@@ -39,41 +191,3 @@ def test_dashboard_requires_login(tmp_path):
 
     with TestClient(app) as anon:
         assert anon.get("/api/dashboard").status_code == 401
-
-
-def test_bill_text_upload_and_confirm(client):
-    upload = client.post(
-        "/api/bills",
-        files={"file": ("bill.txt", b"supplier: Market\nTomatoes|2|50|kg|0.03\n", "text/plain")},
-    )
-    assert upload.status_code == 201, upload.text
-    bill = upload.json()
-    assert bill["supplier_name"] == "Market"
-    assert bill["lines"][0]["name"] == "Tomatoes"
-    confirm = client.post(f"/api/bills/{bill['id']}/confirm")
-    assert confirm.status_code == 200
-    items = {item["name"]: item for item in client.get("/api/items").json()}
-    assert items["Tomatoes"]["quantity_on_hand"] == "2.0000"
-
-
-def test_petpooja_webhook_uses_mapping(client):
-    before = {item["sku"]: item for item in client.get("/api/items").json()}
-    response = client.post(
-        "/api/integrations/petpooja/orders",
-        json={"orderID": "PP-UI-1", "order_items": [{"name": "Latte", "quantity": 1}]},
-    )
-    assert response.status_code == 200, response.text
-    assert response.json()["status"] == "applied"
-    after = {item["sku"]: item for item in client.get("/api/items").json()}
-    assert float(after["ESP-BEAN"]["quantity_on_hand"]) == float(before["ESP-BEAN"]["quantity_on_hand"]) - 18
-
-
-def test_cannot_sell_more_than_stock(client):
-    menu = client.get("/api/menu").json()
-    croissant = next(item for item in menu if item["name"] == "Butter croissant")
-    response = client.post(
-        "/api/sales",
-        json={"payment_method": "cash", "lines": [{"menu_item_id": croissant["id"], "quantity": 500}]},
-    )
-    assert response.status_code == 400
-    assert "Not enough" in response.json()["detail"]

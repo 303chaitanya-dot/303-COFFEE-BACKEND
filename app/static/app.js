@@ -1,15 +1,12 @@
 const pages = [
   ["dashboard", "Dashboard"],
   ["inventory", "Inventory"],
+  ["recipes", "Recipe making"],
   ["menu", "Dishes"],
-  ["sauces", "Sauces"],
-  ["purchases", "Purchases"],
-  ["bills", "Bills"],
   ["sales", "Sales"],
   ["petpooja", "Pet Pooja"],
+  ["sauces", "Sauces"],
   ["waste", "Waste"],
-  ["suppliers", "Suppliers"],
-  ["accounts", "Accounts"],
   ["profile", "Profile"],
 ];
 
@@ -18,11 +15,20 @@ const state = {
   meta: null,
   user: null,
   token: localStorage.getItem("cafe_token"),
+  inventoryMode: localStorage.getItem("inventory_mode") || "view",
 };
 
 const app = document.getElementById("app");
 const nav = document.getElementById("nav");
 const toast = document.getElementById("toast");
+
+const UNIT_BASE = {
+  g: ["mass", 1],
+  kg: ["mass", 1000],
+  ml: ["vol", 1],
+  l: ["vol", 1000],
+  pcs: ["count", 1],
+};
 
 function money(value) {
   const symbol = state.meta?.currency_symbol || "₹";
@@ -74,21 +80,81 @@ function itemOptions(items, selected = "") {
     .join("");
 }
 
+function formatExpiry(value) {
+  if (!value) return "—";
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return value;
+  return `${match[3]}/${match[2]}/${match[1]}`;
+}
+
+function parseExpiry(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const iso = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return raw;
+  const indian = raw.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (!indian) throw new Error("Expiry should look like 23/08/2026");
+  const day = Number(indian[1]);
+  const month = Number(indian[2]);
+  const year = Number(indian[3]);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    throw new Error("That expiry date is not a real day");
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function convertQty(amount, fromUnit, toUnit) {
+  if (fromUnit === toUnit) return Number(amount);
+  const source = UNIT_BASE[fromUnit];
+  const dest = UNIT_BASE[toUnit];
+  if (!source || !dest || source[0] !== dest[0]) return null;
+  return (Number(amount) * source[1]) / dest[1];
+}
+
+function totalStock(qtyPerUnit, units) {
+  return Number(qtyPerUnit || 0) * Number(units || 0);
+}
+
+function pricePerServing(price, qtyPerUnit, units, servingSize, servingUnit, stockUnit) {
+  const servingInStock = convertQty(servingSize, servingUnit, stockUnit);
+  const stock = totalStock(qtyPerUnit, units);
+  if (servingInStock === null) return null;
+  if (stock <= 0) return 0;
+  return (Number(price) * servingInStock) / stock;
+}
+
+function compatibleUnits(stockUnit) {
+  const kind = UNIT_BASE[stockUnit]?.[0];
+  return Object.keys(UNIT_BASE).filter((unit) => UNIT_BASE[unit][0] === kind);
+}
+
+function defaultServingUnit(stockUnit) {
+  if (stockUnit === "kg") return "g";
+  if (stockUnit === "l") return "ml";
+  return stockUnit;
+}
+
+function syncServingUnits(form, preferred = "") {
+  const stockUnit = form.unit.value;
+  const allowed = compatibleUnits(stockUnit);
+  const current = preferred || form.serving_unit.value;
+  const selected = allowed.includes(current) ? current : defaultServingUnit(stockUnit);
+  form.serving_unit.innerHTML = optionList(allowed, selected);
+}
+
 function setPage(page) {
   state.page = page;
   const titles = {
-    dashboard: ["Operations", "Dashboard", "Today's money, low stock, and what needs a reorder."],
-    inventory: ["Stock room", "Inventory", "Ingredients and packaging. Costs update from purchases."],
-    menu: ["Recipes", "Dishes", "Each dish uses ingredients and sauces. Price used is the recipe cost."],
-    sauces: ["Prep", "Sauces", "A sauce is ingredients in a serving. Dishes can pull a sauce whole."],
-    purchases: ["Receiving", "Purchases", "Type the item name, price, quantity, and serving size used in recipes."],
-    bills: ["Paper trail", "Bills", "Upload a supplier bill. We read the lines; you confirm before stock moves."],
-    sales: ["Counter", "Sales", "Ring a ticket. Inventory and COGS post automatically."],
-    petpooja: ["POS", "Pet Pooja", "Map Pet Pooja items to dishes. Incoming orders deduct inventory."],
-    profile: ["People", "Profile", "Your login, role, and cafe staff profiles."],
-    waste: ["Loss", "Waste", "Spoilage and mistakes leave the shelf and hit the P&L."],
-    suppliers: ["Vendors", "Suppliers", "Roasters, dairy, bakery, and packaging."],
-    accounts: ["Ledger", "Accounts", "Double-entry balances and a running profit and loss."],
+    dashboard: ["Stock", "Dashboard", "Value on the shelf, today's POS sales, and what is going off."],
+    inventory: ["Stock room", "Inventory", "View the shelf, or switch to Edit to change a row. Right-click expired qty to discard or mark as good."],
+    recipes: ["Kitchen", "Recipe making", "Sold dishes and their ingredients. Sauces and marinades live under Sauces."],
+    menu: ["POS dishes", "Dishes", "Names Pet Pooja matches when a ticket is punched."],
+    sales: ["Counter", "Sales", "Upload the day's Pet Pooja Item Wise Sales Report to deduct recipes."],
+    petpooja: ["POS", "Pet Pooja", "Pet Pooja pushes billed tickets here. Matching dish names deduct stock."],
+    sauces: ["Prep", "Sauces", "Sauces, marinades, dressings, and other prep recipes."],
+    waste: ["Loss", "Waste", "Spoilage and mistakes leave the shelf."],
+    profile: ["You", "Profile", "Your login details. Team accounts come later."],
   };
   const [kicker, title, hint] = titles[page];
   document.getElementById("page-kicker").textContent = kicker;
@@ -120,299 +186,452 @@ function table(headers, rows) {
   `;
 }
 
+function trimQty(value) {
+  return String(Number(Number(value).toFixed(4)));
+}
+
+function formatStock(value, unit) {
+  const amount = Number(value);
+  const label = `${trimQty(amount)} ${unit}`;
+  if (amount < 0) return `<span class="negative">${label}</span>`;
+  return label;
+}
+
+function expiryClass(item) {
+  const expired = Number(item.expired_quantity) > 0;
+  const good = Number(item.good_quantity);
+  if (expired && good <= 0) return "expired";
+  if (item.expiry_status === "expiring") return "expiring";
+  if (item.below_reorder || Number(item.quantity_on_hand) < 0) return "low";
+  return "";
+}
+
+function stockStatus(item) {
+  const expired = Number(item.expired_quantity);
+  const good = Number(item.good_quantity);
+  if (Number(item.quantity_on_hand) < 0) return "Below zero";
+  if (expired > 0 && good <= 0) return "Expired";
+  if (expired > 0) return `${trimQty(expired)} ${item.unit} expired`;
+  if (item.expiry_status === "expiring") return "Use soon";
+  if (item.below_reorder) return `Reorder at ${Number(item.reorder_point)} units`;
+  return "OK";
+}
+
+function closeExpiryMenu() {
+  document.getElementById("expiry-menu")?.remove();
+}
+
+function showExpiryMenu(item, x, y) {
+  closeExpiryMenu();
+  const expired = Number(item.expired_quantity);
+  if (expired <= 0) {
+    showToast("Nothing expired on this item");
+    return;
+  }
+  const menu = document.createElement("div");
+  menu.id = "expiry-menu";
+  menu.className = "expiry-menu";
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.innerHTML = `
+    <p class="expiry-menu-title">${item.name}</p>
+    <p class="muted help">${trimQty(expired)} ${item.unit} expired. Discard sends it to waste. Not expired moves that much into Good.</p>
+    <label>Quantity<input name="qty" type="number" step="0.0001" min="0.0001" value="${expired}" /></label>
+    <div class="row">
+      <button class="ghost" type="button" data-action="discard">Discard</button>
+      <button class="primary" type="button" data-action="mark_good">Not expired</button>
+    </div>
+  `;
+  document.body.appendChild(menu);
+  const box = menu.getBoundingClientRect();
+  if (box.right > window.innerWidth - 8) menu.style.left = `${Math.max(8, window.innerWidth - box.width - 8)}px`;
+  if (box.bottom > window.innerHeight - 8) menu.style.top = `${Math.max(8, window.innerHeight - box.height - 8)}px`;
+  const run = async (action) => {
+    try {
+      await api(`/api/items/${item.id}/expired`, {
+        method: "POST",
+        body: JSON.stringify({ action, quantity: menu.querySelector("[name=qty]").value }),
+      });
+      showToast(action === "discard" ? "Expired stock discarded as waste" : "Moved that quantity to good");
+      closeExpiryMenu();
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  };
+  menu.querySelectorAll("button").forEach((button) => {
+    button.addEventListener("click", () => run(button.dataset.action));
+  });
+  const dismiss = (event) => {
+    if (!menu.contains(event.target)) {
+      closeExpiryMenu();
+      document.removeEventListener("click", dismiss);
+    }
+  };
+  setTimeout(() => document.addEventListener("click", dismiss), 0);
+}
+
+async function saveInventoryRow(row, item, adding) {
+  const addUnits = adding ? row.querySelector("[name=add_units]").value || 0 : 0;
+  await api(`/api/items/${item.id}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      name: row.querySelector("[name=name]").value,
+      category: row.querySelector("[name=category]").value,
+      unit: row.querySelector("[name=unit]").value,
+      qty_per_unit: row.querySelector("[name=qty_per_unit]").value,
+      units_on_hand: item.units_on_hand,
+      add_units: addUnits,
+      add_price: adding ? row.querySelector("[name=add_price]").value || 0 : 0,
+      price: item.price,
+      serving_size: row.querySelector("[name=serving_size]").value,
+      serving_unit: row.querySelector("[name=serving_unit]").value,
+      reorder_point: row.querySelector("[name=reorder_point]").value,
+      expiry_date: parseExpiry(row.querySelector("[name=expiry_date]").value),
+      replace_stock: false,
+    }),
+  });
+}
+
+function bindInventoryRows(items) {
+  app.querySelectorAll(".item-row").forEach((row) => {
+    const item = items.find((entry) => String(entry.id) === row.dataset.itemId);
+    if (!item) return;
+    row.querySelector(".save-row").addEventListener("click", async () => {
+      try {
+        await saveInventoryRow(row, item, false);
+        showToast("Row saved");
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+    row.querySelector(".add-stock").addEventListener("click", async () => {
+      const added = Number(row.querySelector("[name=add_units]").value);
+      if (!added) {
+        showToast("Enter how many units just came in");
+        return;
+      }
+      try {
+        await saveInventoryRow(row, item, true);
+        showToast(`Added ${added} units to ${item.name}`);
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
+    });
+  });
+}
+
+function bindExpiredCells(items) {
+  app.querySelectorAll(".expired-cell").forEach((cell) => {
+    const item = items.find((entry) => String(entry.id) === cell.dataset.itemId);
+    if (!item) return;
+    cell.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      showExpiryMenu(item, event.clientX, event.clientY);
+    });
+    let press;
+    cell.addEventListener(
+      "touchstart",
+      (event) => {
+        const touch = event.changedTouches[0];
+        press = setTimeout(() => {
+          press = null;
+          showExpiryMenu(item, touch.clientX, touch.clientY);
+        }, 480);
+      },
+      { passive: true }
+    );
+    const cancel = () => {
+      if (press) clearTimeout(press);
+      press = null;
+    };
+    cell.addEventListener("touchend", cancel);
+    cell.addEventListener("touchmove", cancel);
+    cell.addEventListener("touchcancel", cancel);
+  });
+}
+
 async function renderDashboard() {
   const data = await api("/api/dashboard");
   app.innerHTML = `
     <div class="grid cards">
       <article class="card"><p class="label">Today's sales</p><strong>${money(data.today_sales)}</strong><p class="muted">${data.today_tickets} tickets</p></article>
-      <article class="card"><p class="label">Cash</p><strong>${money(data.cash_balance)}</strong></article>
       <article class="card"><p class="label">Inventory value</p><strong>${money(data.inventory_value)}</strong></article>
-      <article class="card"><p class="label">Accounts payable</p><strong>${money(data.accounts_payable)}</strong></article>
+      <article class="card"><p class="label">Low stock</p><strong>${data.low_stock_count}</strong></article>
+      <article class="card"><p class="label">Nearing expiry</p><strong>${data.expiring.length}</strong></article>
+      <article class="card"><p class="label">Expired</p><strong>${data.expired.length}</strong></article>
     </div>
+    <h3>Expired</h3>
+    ${table(
+      ["Item", "Good", "Expired", "Expiry"],
+      data.expired.map((item) => `<tr class="expired"><td>${item.name}</td><td>${formatStock(item.good_quantity, item.unit)}</td><td>${formatStock(item.expired_quantity, item.unit)}</td><td>${formatExpiry(item.expiry_date)}</td></tr>`)
+    )}
+    <h3>Nearing expiry</h3>
+    ${table(
+      ["Item", "Good", "Expired", "Expiry"],
+      data.expiring.map((item) => `<tr class="expiring"><td>${item.name}</td><td>${formatStock(item.good_quantity, item.unit)}</td><td>${formatStock(item.expired_quantity, item.unit)}</td><td>${formatExpiry(item.expiry_date)}</td></tr>`)
+    )}
     <h3>Low stock</h3>
     ${table(
-      ["Item", "On hand", "Reorder at", "Value"],
-      data.low_stock.map(
-        (item) => `<tr class="low"><td>${item.name}</td><td>${item.quantity_on_hand} ${item.unit}</td><td>${item.reorder_point}</td><td>${money(item.inventory_value)}</td></tr>`
-      )
+      ["Item", "On hand", "Reorder at"],
+      data.low_stock.map((item) => `<tr class="low"><td>${item.name}</td><td>${item.units_on_hand} units</td><td>${item.reorder_point} units</td></tr>`)
     )}
+  `;
+}
+
+function bindStockPreview(form) {
+  const stockLine = form.querySelector("#stock-total");
+  const priceLine = form.querySelector("#serving-price");
+  const update = () => {
+    const stock = totalStock(form.qty_per_unit.value, form.units_on_hand.value);
+    stockLine.textContent = `Total stock: ${stock} ${form.unit.value}`;
+    const value = pricePerServing(
+      form.price.value,
+      form.qty_per_unit.value,
+      form.units_on_hand.value,
+      form.serving_size.value,
+      form.serving_unit.value,
+      form.unit.value
+    );
+    if (value === null) {
+      priceLine.textContent = "Serving unit must match the stock unit (g with kg, ml with l, pcs with pcs).";
+      return;
+    }
+    priceLine.textContent = `Price per serving: ${money(value)}`;
+  };
+  form.unit.addEventListener("change", () => {
+    syncServingUnits(form);
+    update();
+  });
+  for (const field of ["price", "qty_per_unit", "units_on_hand", "serving_size", "serving_unit"]) {
+    form[field].addEventListener("input", update);
+    form[field].addEventListener("change", update);
+  }
+  update();
+}
+
+function escapeAttr(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/</g, "&lt;");
+}
+
+function itemPayload(form) {
+  return {
+    name: form.name.value,
+    category: form.category.value,
+    unit: form.unit.value,
+    qty_per_unit: form.qty_per_unit.value,
+    units_on_hand: form.units_on_hand.value,
+    price: form.price.value,
+    serving_size: form.serving_size.value,
+    serving_unit: form.serving_unit.value,
+    reorder_point: form.reorder_point.value,
+    expiry_date: parseExpiry(form.expiry_date.value),
+    replace_stock: Boolean(form.dataset.itemId),
+  };
+}
+
+function fillItemForm(form, item) {
+  form.dataset.itemId = String(item.id);
+  form.querySelector("h3").textContent = `Edit ${item.name}`;
+  form.querySelector("button[type=submit]").textContent = "Update item";
+  document.getElementById("cancel-edit").hidden = false;
+  form.name.value = item.name;
+  form.category.value = item.category;
+  form.unit.value = item.unit;
+  form.qty_per_unit.value = Number(item.qty_per_unit);
+  form.units_on_hand.value = Number(item.units_on_hand);
+  form.price.value = Number(item.price);
+  form.serving_size.value = Number(item.serving_size);
+  form.reorder_point.value = Number(item.reorder_point);
+  form.expiry_date.value = formatExpiry(item.expiry_date) === "—" ? "" : formatExpiry(item.expiry_date);
+  syncServingUnits(form, item.serving_unit);
+  form.price.dispatchEvent(new Event("input"));
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function selectedItemIds() {
+  return [...app.querySelectorAll(".item-check:checked")].map((box) => Number(box.value));
+}
+
+async function downloadSheetTemplate(path = "/api/sheet/template", filename = "303-inventory-sheet.csv") {
+  const response = await fetch(path, {
+    headers: state.token ? { Authorization: `Bearer ${state.token}` } : {},
+  });
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function inventoryViewRows(items) {
+  return items.map(
+    (item) => `<tr class="${expiryClass(item)} item-row" data-item-id="${item.id}" data-search="${escapeAttr((item.name + " " + item.category).toLowerCase())}">
+      <td><input class="item-check" type="checkbox" value="${item.id}" /></td>
+      <td>${item.name}<div class="muted">${item.category} · ${item.sku}</div></td>
+      <td>${item.qty_per_unit} ${item.unit}</td>
+      <td>${item.units_on_hand}</td>
+      <td>${formatStock(item.quantity_on_hand, item.unit)}</td>
+      <td class="good-cell">${formatStock(item.good_quantity, item.unit)}</td>
+      <td class="expired-cell${Number(item.expired_quantity) > 0 ? " has-expired" : ""}" data-item-id="${item.id}">${formatStock(item.expired_quantity, item.unit)}</td>
+      <td>${money(item.price)}</td>
+      <td>${item.serving_size} ${item.serving_unit}</td>
+      <td>${money(item.price_per_serving)}</td>
+      <td>${formatExpiry(item.expiry_date)}</td>
+      <td>${stockStatus(item)}</td>
+      <td><button class="ghost edit-item" type="button" data-item-id="${item.id}">Edit</button></td>
+    </tr>`
+  );
+}
+
+function inventoryEditRows(items) {
+  return items.map(
+    (item) => `<tr class="${expiryClass(item)} item-row" data-item-id="${item.id}" data-search="${escapeAttr((item.name + " " + item.category).toLowerCase())}">
+      <td><input class="item-check" type="checkbox" value="${item.id}" /></td>
+      <td>
+        <input class="cell-input" name="name" value="${escapeAttr(item.name)}" />
+        <select class="cell-input" name="category">${optionList(state.meta.item_categories, item.category)}</select>
+      </td>
+      <td class="pack-cell">
+        <input class="cell-input narrow" name="qty_per_unit" type="number" step="0.0001" value="${Number(item.qty_per_unit)}" />
+        <select class="cell-input narrow" name="unit">${optionList(state.meta.units, item.unit)}</select>
+      </td>
+      <td>${trimQty(item.units_on_hand)}</td>
+      <td class="add-cell">
+        <input class="cell-input narrow" name="add_units" type="number" step="0.0001" placeholder="+ units" />
+        <input class="cell-input narrow" name="add_price" type="number" step="0.01" placeholder="₹ spent" />
+        <button class="ghost add-stock" type="button">Add</button>
+      </td>
+      <td>${formatStock(item.quantity_on_hand, item.unit)}</td>
+      <td class="good-cell">${formatStock(item.good_quantity, item.unit)}</td>
+      <td class="expired-cell${Number(item.expired_quantity) > 0 ? " has-expired" : ""}" data-item-id="${item.id}">${formatStock(item.expired_quantity, item.unit)}</td>
+      <td><input class="cell-input" name="expiry_date" type="text" inputmode="numeric" placeholder="DD/MM/YYYY" value="${formatExpiry(item.expiry_date) === "—" ? "" : formatExpiry(item.expiry_date)}" /></td>
+      <td>
+        <input class="cell-input narrow" name="serving_size" type="number" step="0.0001" value="${Number(item.serving_size)}" title="Serving" />
+        <select class="cell-input narrow" name="serving_unit">${optionList(compatibleUnits(item.unit), item.serving_unit)}</select>
+        <input class="cell-input narrow" name="reorder_point" type="number" step="0.0001" value="${Number(item.reorder_point)}" title="Reorder units" />
+        <button class="ghost save-row" type="button">Save</button>
+      </td>
+    </tr>`
+  );
+}
+
+function itemComposer() {
+  return `
+    <form class="panel composer" id="item-form">
+      <h3>Add inventory</h3>
+      <label>Name<input name="name" required placeholder="Soy sauce" /></label>
+      <label>Category<select name="category">${optionList(state.meta.item_categories)}</select></label>
+      <label>Stock unit<select name="unit">${optionList(state.meta.units, "ml")}</select></label>
+      <div class="row">
+        <label>Qty per unit<input name="qty_per_unit" type="number" step="0.0001" value="250" required /></label>
+        <label>Units on hand<input name="units_on_hand" type="number" step="0.0001" value="0" required /></label>
+      </div>
+      <p id="stock-total" class="muted help">Total stock: 0 ml</p>
+      <label>Price (total spent)<input name="price" type="number" step="0.01" value="0" required /></label>
+      <div class="row">
+        <label>Serving size<input name="serving_size" type="number" step="0.0001" value="15" required /></label>
+        <label>Serving unit<select name="serving_unit">${optionList(compatibleUnits("ml"), "ml")}</select></label>
+      </div>
+      <p id="serving-price" class="muted help">Price per serving: ${money(0)}</p>
+      <label>Reorder point (units)<input name="reorder_point" type="number" step="0.0001" value="0" /></label>
+      <label>Expiry<input name="expiry_date" type="text" inputmode="numeric" placeholder="23/08/2026" /></label>
+      <div class="row">
+        <button class="primary" type="submit">Save item</button>
+        <button class="ghost" type="button" id="cancel-edit" hidden>Cancel edit</button>
+      </div>
+    </form>
   `;
 }
 
 async function renderInventory() {
   const items = await api("/api/items");
+  const editing = state.inventoryMode === "edit";
   app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["SKU", "Item", "On hand", "Serving", "Unit cost", "Value", "Status"],
-        items.map(
-          (item) => `<tr class="${item.below_reorder ? "low" : ""}">
-            <td>${item.sku}</td>
-            <td>${item.name}<div class="muted">${item.category}</div></td>
-            <td>${item.quantity_on_hand} ${item.unit}</td>
-            <td>${item.serving_size} ${item.unit}</td>
-            <td>${money(item.unit_cost)}</td>
-            <td>${money(item.inventory_value)}</td>
-            <td>${item.below_reorder ? "Reorder" : "OK"}</td>
-          </tr>`
-        )
-      )}
-      <form class="panel" id="item-form">
-        <h3>Add item</h3>
-        <label>SKU<input name="sku" required /></label>
-        <label>Name<input name="name" required /></label>
-        <label>Category<select name="category">${optionList(state.meta.item_categories)}</select></label>
-        <label>Unit<select name="unit">${optionList(state.meta.units)}</select></label>
-        <label>Reorder point<input name="reorder_point" type="number" step="0.0001" value="0" /></label>
-        <label>Par level<input name="par_level" type="number" step="0.0001" value="0" /></label>
-        <label>Serving size<input name="serving_size" type="number" step="0.0001" value="1" /></label>
-        <button class="primary" type="submit">Save item</button>
-      </form>
-    </div>
-    <form class="panel" id="adjust-form">
-      <h3>Count adjustment</h3>
-      <div class="row">
-        <label>Item<select name="item_id">${itemOptions(items)}</select></label>
-        <label>Qty change<input name="quantity_delta" type="number" step="0.0001" required /></label>
-        <label>Note<input name="note" required placeholder="Cycle count, found stock..." /></label>
-        <button class="primary" type="submit">Post adjustment</button>
+    <div class="toolbar">
+      <label class="check-all"><input type="checkbox" id="select-all" /> Select all</label>
+      <input id="item-search" class="cell-input search" type="search" placeholder="Search items" />
+      <div class="mode-toggle">
+        <button type="button" data-mode="view" class="${editing ? "" : "active"}">View</button>
+        <button type="button" data-mode="edit" class="${editing ? "active" : ""}">Edit</button>
       </div>
-    </form>
-  `;
-  document.getElementById("item-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.target);
-    await api("/api/items", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(form.entries())),
-    });
-    showToast("Item added");
-    render();
-  });
-  document.getElementById("adjust-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.target);
-    await api("/api/adjustments", {
-      method: "POST",
-      body: JSON.stringify({
-        item_id: Number(form.get("item_id")),
-        quantity_delta: form.get("quantity_delta"),
-        note: form.get("note"),
-      }),
-    });
-    showToast("Adjustment posted");
-    render();
-  });
-}
-
-async function renderMenu() {
-  const [menu, items, sauces] = await Promise.all([api("/api/menu"), api("/api/items"), api("/api/sauces")]);
-  app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["Drink / food", "Price", "Recipe cost", "Recipe"],
-        menu.map(
-          (item) => `<tr>
-            <td>${item.name}<div class="muted">${item.category}</div></td>
-            <td>${money(item.price)}</td>
-            <td>${money(item.recipe_cost)}</td>
-            <td>${item.recipe.map((line) => `${line.quantity} ${line.unit} ${line.name} · used ${money(line.price_used)}`).join("<br>")}</td>
-          </tr>`
-        )
-      )}
-      <form class="panel" id="menu-form">
-        <h3>Add menu item</h3>
-        <label>Name<input name="name" required /></label>
-        <label>Category<select name="category">${optionList(state.meta.menu_categories)}</select></label>
-        <label>Price<input name="price" type="number" step="0.01" required /></label>
-        <div class="lines" id="recipe-lines"></div>
-        <div class="row">
-          <button class="ghost" type="button" id="add-recipe-line">Add ingredient</button>
-          <button class="ghost" type="button" id="add-sauce-line">Add sauce</button>
-          <button class="primary" type="submit">Save recipe</button>
-        </div>
-      </form>
+      <button class="ghost" type="button" id="delete-selected">Delete selected</button>
     </div>
+    ${
+      editing
+        ? `${table(["", "Item", "Pack", "Now", "New in", "On hand", "Good", "Expired", "Expiry", ""], inventoryEditRows(items))}
+           <p class="muted help">Edit mode: change a row and Save. New in adds units on top of Now. Right-click Expired to discard or mark as good.</p>
+           ${itemComposer()}`
+        : `<div class="split-page">
+            ${table(["", "Item", "Pack", "Units", "On hand", "Good", "Expired", "Price", "Serving", "Per serving", "Expiry", "Status", ""], inventoryViewRows(items))}
+            ${itemComposer()}
+          </div>
+          <p class="muted help">Right-click or long-press Expired to discard it as waste, or mark some of it as not expired.</p>`
+    }
   `;
-  const lines = document.getElementById("recipe-lines");
-  const addLine = (kind = "item") => {
-    const row = document.createElement("div");
-    row.className = "line";
-    row.dataset.kind = kind;
-    const options =
-      kind === "sauce"
-        ? sauces.map((sauce) => `<option value="${sauce.id}">${sauce.name} · ${money(sauce.recipe_cost)}</option>`).join("")
-        : itemOptions(items);
-    row.innerHTML = `
-      <select name="${kind === "sauce" ? "sauce_id" : "item_id"}">${options}</select>
-      <input name="quantity" type="number" step="0.0001" placeholder="qty" required />
-      <span class="muted">${kind === "sauce" ? "sauce servings" : "per serving"}</span>
-      <button class="ghost" type="button">Remove</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => row.remove());
-    lines.appendChild(row);
-  };
-  document.getElementById("add-recipe-line").addEventListener("click", () => addLine("item"));
-  document.getElementById("add-sauce-line").addEventListener("click", () => addLine("sauce"));
-  addLine("item");
-  document.getElementById("menu-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.target;
-    const recipe = [...form.querySelectorAll(".line")].map((row) => {
-      const quantity = row.querySelector('[name="quantity"]').value;
-      if (row.dataset.kind === "sauce") {
-        return { sauce_id: Number(row.querySelector('[name="sauce_id"]').value), quantity };
-      }
-      return { item_id: Number(row.querySelector('[name="item_id"]').value), quantity };
+  const form = document.getElementById("item-form");
+  bindStockPreview(form);
+  bindExpiredCells(items);
+  if (editing) bindInventoryRows(items);
+  document.getElementById("item-search").addEventListener("input", (event) => {
+    const needle = event.target.value.trim().toLowerCase();
+    app.querySelectorAll(".item-row").forEach((row) => {
+      row.hidden = Boolean(needle) && !row.dataset.search.includes(needle);
     });
-    await api("/api/menu", {
-      method: "POST",
-      body: JSON.stringify({
-        name: form.name.value,
-        category: form.category.value,
-        price: form.price.value,
-        recipe,
-      }),
-    });
-    showToast("Menu item saved");
-    render();
   });
-}
-
-async function renderPurchases() {
-  const purchases = await api("/api/purchases");
-  app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["When", "Supplier", "Invoice", "Total", "Paid"],
-        purchases.map(
-          (purchase) => `<tr>
-            <td>${new Date(purchase.purchased_at).toLocaleString()}</td>
-            <td>${purchase.supplier_name}</td>
-            <td>${purchase.invoice_number || "—"}</td>
-            <td>${money(purchase.total)}</td>
-            <td>${purchase.paid ? '<span class="good">Paid</span>' : `<button class="ghost pay" data-id="${purchase.id}">Mark paid</button>`}</td>
-          </tr>`
-        )
-      )}
-      <form class="panel" id="purchase-form">
-        <h3>Manual purchase</h3>
-        <label>Supplier name<input name="supplier_name" placeholder="Walk-in or vendor" /></label>
-        <label>Invoice<input name="invoice_number" /></label>
-        <label><input type="checkbox" name="paid" /> Paid from cash now</label>
-        <div class="lines" id="purchase-lines"></div>
-        <div class="row">
-          <button class="ghost" type="button" id="add-purchase-line">Add item</button>
-          <button class="primary" type="submit">Post purchase</button>
-        </div>
-      </form>
-    </div>
-  `;
-  const lines = document.getElementById("purchase-lines");
-  const addLine = () => {
-    const row = document.createElement("div");
-    row.className = "line";
-    row.style.gridTemplateColumns = "1fr 80px 90px 80px 90px auto";
-    row.innerHTML = `
-      <input name="name" placeholder="Item name" required />
-      <input name="quantity" type="number" step="0.0001" placeholder="qty" required />
-      <input name="price" type="number" step="0.01" placeholder="price" required />
-      <select name="unit">${optionList(state.meta.units)}</select>
-      <input name="serving_size" type="number" step="0.0001" placeholder="serving" />
-      <button class="ghost" type="button">Remove</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => row.remove());
-    lines.appendChild(row);
-  };
-  document.getElementById("add-purchase-line").addEventListener("click", addLine);
-  addLine();
-  document.getElementById("purchase-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.target;
-    await api("/api/purchases/quick", {
-      method: "POST",
-      body: JSON.stringify({
-        supplier_name: form.supplier_name.value || null,
-        invoice_number: form.invoice_number.value || null,
-        paid: form.paid.checked,
-        lines: [...form.querySelectorAll(".line")].map((row) => ({
-          name: row.querySelector('[name="name"]').value,
-          quantity: row.querySelector('[name="quantity"]').value,
-          price: row.querySelector('[name="price"]').value,
-          unit: row.querySelector('[name="unit"]').value,
-          serving_size: row.querySelector('[name="serving_size"]').value || null,
-        })),
-      }),
-    });
-    showToast("Purchase posted");
-    render();
-  });
-  app.querySelectorAll(".pay").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api(`/api/purchases/${button.dataset.id}/pay`, { method: "POST" });
-      showToast("Supplier paid");
+  app.querySelectorAll(".mode-toggle button").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.inventoryMode = button.dataset.mode;
+      localStorage.setItem("inventory_mode", state.inventoryMode);
       render();
     });
   });
-}
-
-async function renderSales() {
-  const [sales, menu] = await Promise.all([api("/api/sales"), api("/api/menu")]);
-  app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["When", "Ticket", "Tender", "Total", "COGS"],
-        sales.map(
-          (sale) => `<tr>
-            <td>${new Date(sale.sold_at).toLocaleString()}</td>
-            <td>${sale.lines.map((line) => `${line.quantity} × ${line.menu_item_name}`).join("<br>")}</td>
-            <td>${sale.payment_method}</td>
-            <td>${money(sale.total)}</td>
-            <td>${money(sale.cogs)}</td>
-          </tr>`
-        )
-      )}
-      <form class="panel" id="sale-form">
-        <h3>New ticket</h3>
-        <label>Payment<select name="payment_method">${optionList(state.meta.payment_methods)}</select></label>
-        <div class="lines" id="sale-lines"></div>
-        <div class="row">
-          <button class="ghost" type="button" id="add-sale-line">Add item</button>
-          <button class="primary" type="submit">Ring sale</button>
-        </div>
-      </form>
-    </div>
-  `;
-  const lines = document.getElementById("sale-lines");
-  const addLine = () => {
-    const row = document.createElement("div");
-    row.className = "line";
-    row.innerHTML = `
-      <select name="menu_item_id">${menu.map((item) => `<option value="${item.id}">${item.name} · ${money(item.price)}</option>`).join("")}</select>
-      <input name="quantity" type="number" min="1" value="1" required />
-      <span class="muted">qty</span>
-      <button class="ghost" type="button">Remove</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => row.remove());
-    lines.appendChild(row);
-  };
-  document.getElementById("add-sale-line").addEventListener("click", addLine);
-  addLine();
-  document.getElementById("sale-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.target;
-    await api("/api/sales", {
-      method: "POST",
-      body: JSON.stringify({
-        payment_method: form.payment_method.value,
-        lines: [...form.querySelectorAll(".line")].map((row) => ({
-          menu_item_id: Number(row.querySelector('[name="menu_item_id"]').value),
-          quantity: Number(row.querySelector('[name="quantity"]').value),
-        })),
-      }),
+  app.querySelectorAll(".edit-item").forEach((button) => {
+    button.addEventListener("click", () => {
+      const item = items.find((entry) => String(entry.id) === button.dataset.itemId);
+      if (item) fillItemForm(form, item);
     });
-    showToast("Sale recorded");
-    render();
+  });
+  document.getElementById("cancel-edit").addEventListener("click", () => render());
+  document.getElementById("select-all").addEventListener("change", (event) => {
+    app.querySelectorAll(".item-check").forEach((box) => {
+      box.checked = event.target.checked;
+    });
+  });
+  document.getElementById("delete-selected").addEventListener("click", async () => {
+    const ids = selectedItemIds();
+    if (!ids.length) {
+      showToast("Select at least one item");
+      return;
+    }
+    try {
+      await api("/api/items/delete", { method: "POST", body: JSON.stringify({ ids }) });
+      showToast(ids.length === 1 ? "Item deleted" : `${ids.length} items deleted`);
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      const itemId = form.dataset.itemId;
+      await api(itemId ? `/api/items/${itemId}` : "/api/items", {
+        method: itemId ? "PUT" : "POST",
+        body: JSON.stringify(itemPayload(form)),
+      });
+      showToast(itemId ? "Item updated" : "Item added");
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
   });
 }
 
@@ -457,162 +676,302 @@ async function renderWaste() {
   });
 }
 
-async function renderSuppliers() {
-  const suppliers = await api("/api/suppliers");
-  app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["Supplier", "Contact", "Phone", "Email"],
-        suppliers.map((row) => `<tr><td>${row.name}</td><td>${row.contact_name || "—"}</td><td>${row.phone || "—"}</td><td>${row.email || "—"}</td></tr>`)
-      )}
-      <form class="panel" id="supplier-form">
-        <h3>Add supplier</h3>
-        <label>Name<input name="name" required /></label>
-        <label>Contact<input name="contact_name" /></label>
-        <label>Phone<input name="phone" /></label>
-        <label>Email<input name="email" type="email" /></label>
-        <button class="primary" type="submit">Save supplier</button>
-      </form>
-    </div>
+function sauceLineRow(items, line = null) {
+  const row = document.createElement("div");
+  row.className = "line";
+  row.innerHTML = `
+    <select name="item_id">${itemOptions(items, line?.item_id || "")}</select>
+    <input name="quantity" type="number" step="0.0001" placeholder="qty" required value="${line ? Number(line.quantity) : ""}" />
+    <button class="ghost" type="button">Remove</button>
   `;
-  document.getElementById("supplier-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await api("/api/suppliers", {
-      method: "POST",
-      body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())),
-    });
-    showToast("Supplier saved");
-    render();
-  });
-}
-
-async function renderAccounts() {
-  const [accounts, ledger, pnl] = await Promise.all([
-    api("/api/accounts"),
-    api("/api/ledger"),
-    api("/api/reports/profit-loss"),
-  ]);
-  app.innerHTML = `
-    <div class="grid cards">
-      <article class="card"><p class="label">Revenue</p><strong>${money(pnl.revenue)}</strong></article>
-      <article class="card"><p class="label">COGS</p><strong>${money(pnl.cogs)}</strong></article>
-      <article class="card"><p class="label">Gross profit</p><strong>${money(pnl.gross_profit)}</strong></article>
-      <article class="card"><p class="label">Net income</p><strong>${money(pnl.net_income)}</strong></article>
-    </div>
-    ${table(
-      ["Code", "Account", "Type", "Balance"],
-      accounts.map((account) => `<tr><td>${account.code}</td><td>${account.name}</td><td>${account.type}</td><td>${money(account.balance)}</td></tr>`)
-    )}
-    <h3>Recent journal</h3>
-    ${table(
-      ["Date", "Memo", "Lines"],
-      ledger.map(
-        (entry) => `<tr>
-          <td>${entry.occurred_on}</td>
-          <td>${entry.memo}</td>
-          <td>${entry.lines.map((line) => `${line.account_code} ${line.debit > 0 ? "Dr " + money(line.debit) : "Cr " + money(line.credit)}`).join("<br>")}</td>
-        </tr>`
-      )
-    )}
-  `;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  return row;
 }
 
 async function renderSauces() {
   const [sauces, items] = await Promise.all([api("/api/sauces"), api("/api/items")]);
   app.innerHTML = `
-    <div class="two">
-      ${table(
-        ["Sauce", "Cost / serving", "Ingredients"],
-        sauces.map(
-          (sauce) => `<tr>
-            <td>${sauce.name}</td>
-            <td>${money(sauce.recipe_cost)}</td>
-            <td>${sauce.recipe.map((line) => `${line.quantity} ${line.item_unit} ${line.item_name} · ${money(line.price_used)}`).join("<br>")}</td>
-          </tr>`
-        )
-      )}
-      <form class="panel" id="sauce-form">
+    <div class="page-stack">
+      <form class="panel composer" id="sauce-form">
         <h3>Add sauce</h3>
-        <label>Name<input name="name" required /></label>
+        <label>Name<input name="name" required placeholder="Garlic aioli" /></label>
         <div class="lines" id="sauce-lines"></div>
         <div class="row">
           <button class="ghost" type="button" id="add-sauce-ing">Add ingredient</button>
           <button class="primary" type="submit">Save sauce</button>
+          <button class="ghost" type="button" id="cancel-sauce" hidden>Cancel</button>
         </div>
       </form>
-    </div>
-  `;
-  const lines = document.getElementById("sauce-lines");
-  const addLine = () => {
-    const row = document.createElement("div");
-    row.className = "line";
-    row.innerHTML = `
-      <select name="item_id">${itemOptions(items)}</select>
-      <input name="quantity" type="number" step="0.0001" placeholder="qty / serving" required />
-      <span class="muted">used</span>
-      <button class="ghost" type="button">Remove</button>
-    `;
-    row.querySelector("button").addEventListener("click", () => row.remove());
-    lines.appendChild(row);
-  };
-  document.getElementById("add-sauce-ing").addEventListener("click", addLine);
-  addLine();
-  document.getElementById("sauce-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = event.target;
-    await api("/api/sauces", {
-      method: "POST",
-      body: JSON.stringify({
-        name: form.name.value,
-        recipe: [...form.querySelectorAll(".line")].map((row) => ({
-          item_id: Number(row.querySelector('[name="item_id"]').value),
-          quantity: row.querySelector('[name="quantity"]').value,
-        })),
-      }),
-    });
-    showToast("Sauce saved");
-    render();
-  });
-}
-
-async function renderBills() {
-  const bills = await api("/api/bills");
-  app.innerHTML = `
-    <div class="two">
+      <div class="toolbar">
+        <input id="sauce-search" class="cell-input search" type="search" placeholder="Search sauces" />
+        <span class="muted">${sauces.length} sauces</span>
+      </div>
       ${table(
-        ["File", "Supplier", "Status", "Lines"],
-        bills.map(
-          (bill) => `<tr>
-            <td>${bill.filename}</td>
-            <td>${bill.supplier_name || "—"}</td>
-            <td>${bill.status}${bill.status === "pending_review" ? ` <button class="ghost confirm-bill" data-id="${bill.id}">Post stock</button>` : ""}</td>
-            <td>${(bill.lines || []).map((line) => `${line.quantity} ${line.unit || ""} ${line.name} @ ${line.price}`).join("<br>")}</td>
+        ["Sauce", "Cost / serving", "Ingredients", ""],
+        sauces.map(
+          (sauce) => `<tr class="sauce-row" data-search="${escapeAttr(sauce.name.toLowerCase())}">
+            <td>${sauce.name}</td>
+            <td>${money(sauce.recipe_cost)}</td>
+            <td>${sauce.recipe.map((line) => `${line.quantity} ${line.item_unit} ${line.item_name}`).join("<br>")}</td>
+            <td><button class="ghost edit-sauce" type="button" data-sauce-id="${sauce.id}">Edit</button></td>
           </tr>`
         )
       )}
-      <form class="panel" id="bill-form">
-        <h3>Upload bill</h3>
-        <p class="muted">Photo bills need OPENAI_API_KEY. A .txt bill works now: one line like <code>Tomatoes|5|40|kg|30</code>.</p>
-        <label>File<input name="file" type="file" required /></label>
-        <button class="primary" type="submit">Read bill</button>
-      </form>
     </div>
   `;
-  document.getElementById("bill-form").addEventListener("submit", async (event) => {
+  const form = document.getElementById("sauce-form");
+  const lines = document.getElementById("sauce-lines");
+  const addLine = (line = null) => lines.appendChild(sauceLineRow(items, line));
+  addLine();
+  document.getElementById("add-sauce-ing").addEventListener("click", () => addLine());
+  document.getElementById("cancel-sauce").addEventListener("click", () => render());
+  document.getElementById("sauce-search").addEventListener("input", (event) => {
+    const needle = event.target.value.trim().toLowerCase();
+    app.querySelectorAll(".sauce-row").forEach((row) => {
+      row.hidden = Boolean(needle) && !row.dataset.search.includes(needle);
+    });
+  });
+  app.querySelectorAll(".edit-sauce").forEach((button) => {
+    button.addEventListener("click", () => {
+      const sauce = sauces.find((entry) => String(entry.id) === button.dataset.sauceId);
+      if (!sauce) return;
+      form.dataset.sauceId = String(sauce.id);
+      form.querySelector("h3").textContent = `Edit ${sauce.name}`;
+      form.querySelector("button[type=submit]").textContent = "Update sauce";
+      document.getElementById("cancel-sauce").hidden = false;
+      form.name.value = sauce.name;
+      lines.innerHTML = "";
+      sauce.recipe.forEach((line) => addLine(line));
+      form.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const sauceId = form.dataset.sauceId;
+    try {
+      await api(sauceId ? `/api/sauces/${sauceId}` : "/api/sauces", {
+        method: sauceId ? "PUT" : "POST",
+        body: JSON.stringify({
+          name: form.name.value,
+          recipe: [...form.querySelectorAll(".line")].map((row) => ({
+            item_id: Number(row.querySelector('[name="item_id"]').value),
+            quantity: row.querySelector('[name="quantity"]').value,
+          })),
+        }),
+      });
+      showToast(sauceId ? "Sauce updated" : "Sauce saved");
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
+function recipeLineRow(items, line = null) {
+  const row = document.createElement("div");
+  row.className = "line";
+  row.innerHTML = `
+    <select name="item_id">${itemOptions(items, line?.item_id || "")}</select>
+    <input name="quantity" type="number" step="0.0001" placeholder="qty" required value="${line ? Number(line.quantity) : ""}" />
+    <select name="unit">${optionList(state.meta.units, line?.unit || "")}</select>
+    <button class="ghost" type="button">Remove</button>
+  `;
+  row.querySelector("button").addEventListener("click", () => row.remove());
+  return row;
+}
+
+function fillRecipeForm(form, dish, items) {
+  form.dataset.recipeId = String(dish.id);
+  form.querySelector("h3").textContent = `Edit ${dish.name}`;
+  form.querySelector("button[type=submit]").textContent = "Update recipe";
+  document.getElementById("cancel-recipe").hidden = false;
+  form.name.value = dish.name;
+  form.category.value = dish.category;
+  form.price.value = Number(dish.price);
+  const lines = document.getElementById("recipe-edit-lines");
+  lines.innerHTML = "";
+  (dish.recipe || []).filter((line) => line.item_id).forEach((line) => lines.appendChild(recipeLineRow(items, line)));
+  if (!lines.children.length) lines.appendChild(recipeLineRow(items));
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function renderRecipes() {
+  const [menu, items] = await Promise.all([api("/api/menu"), api("/api/items")]);
+  app.innerHTML = `
+    <div class="page-stack">
+      <form class="panel composer" id="recipe-form">
+        <h3>Add recipe</h3>
+        <label>Name<input name="name" required /></label>
+        <div class="row">
+          <label>Category<select name="category">${optionList(state.meta.menu_categories, "food")}</select></label>
+          <label>Sell price<input name="price" type="number" step="0.01" value="0" required /></label>
+        </div>
+        <div class="lines" id="recipe-edit-lines"></div>
+        <div class="row">
+          <button class="ghost" type="button" id="add-recipe-edit-line">Add ingredient</button>
+          <button class="primary" type="submit">Save recipe</button>
+          <button class="ghost" type="button" id="cancel-recipe" hidden>Cancel</button>
+        </div>
+      </form>
+      <div class="toolbar">
+        <input id="recipe-search" class="cell-input search" type="search" placeholder="Search recipes" />
+        <span class="muted">${menu.length} dishes</span>
+      </div>
+      ${table(
+        ["Recipe", "Price", "Cost", "Ingredients", ""],
+        menu.map(
+          (dish) => `<tr class="recipe-row" data-search="${escapeAttr(dish.name.toLowerCase())}">
+            <td>${dish.name}<div class="muted">${dish.category} · ${dish.recipe.length} lines</div></td>
+            <td>${money(dish.price)}</td>
+            <td>${money(dish.recipe_cost)}</td>
+            <td>${dish.recipe.map((line) => `${line.quantity} ${line.unit} ${line.name}`).join("<br>") || "—"}</td>
+            <td><button class="ghost edit-recipe" type="button" data-recipe-id="${dish.id}">Edit</button></td>
+          </tr>`
+        )
+      )}
+    </div>
+  `;
+  const form = document.getElementById("recipe-form");
+  const lines = document.getElementById("recipe-edit-lines");
+  const addLine = (line = null) => lines.appendChild(recipeLineRow(items, line));
+  addLine();
+  document.getElementById("add-recipe-edit-line").addEventListener("click", () => addLine());
+  document.getElementById("cancel-recipe").addEventListener("click", () => render());
+  document.getElementById("recipe-search").addEventListener("input", (event) => {
+    const needle = event.target.value.trim().toLowerCase();
+    app.querySelectorAll(".recipe-row").forEach((row) => {
+      row.hidden = Boolean(needle) && !row.dataset.search.includes(needle);
+    });
+  });
+  app.querySelectorAll(".edit-recipe").forEach((button) => {
+    button.addEventListener("click", () => {
+      const dish = menu.find((entry) => String(entry.id) === button.dataset.recipeId);
+      if (dish) fillRecipeForm(form, dish, items);
+    });
+  });
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const recipeId = form.dataset.recipeId;
+    try {
+      await api(recipeId ? `/api/menu/${recipeId}` : "/api/menu", {
+        method: recipeId ? "PUT" : "POST",
+        body: JSON.stringify({
+          name: form.name.value,
+          category: form.category.value,
+          price: form.price.value,
+          recipe: [...form.querySelectorAll(".line")].map((row) => ({
+            item_id: Number(row.querySelector('[name="item_id"]').value),
+            quantity: row.querySelector('[name="quantity"]').value,
+            unit: row.querySelector('[name="unit"]').value,
+          })),
+        }),
+      });
+      showToast(recipeId ? "Recipe updated" : "Recipe added");
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
+async function renderMenu() {
+  const [menu, items] = await Promise.all([api("/api/menu"), api("/api/items")]);
+  app.innerHTML = `
+    <div class="page-stack">
+      <form class="panel composer" id="menu-form">
+        <h3>Add dish</h3>
+        <label>Name<input name="name" required /></label>
+        <div class="row">
+          <label>Category<select name="category">${optionList(state.meta.menu_categories)}</select></label>
+          <label>Sell price<input name="price" type="number" step="0.01" required /></label>
+        </div>
+        <div class="lines" id="recipe-lines"></div>
+        <div class="row">
+          <button class="ghost" type="button" id="add-recipe-line">Add ingredient</button>
+          <button class="primary" type="submit">Save dish</button>
+        </div>
+      </form>
+      ${table(
+        ["Dish", "Price", "Recipe cost", "Recipe"],
+        menu.map(
+          (item) => `<tr>
+            <td>${item.name}<div class="muted">${item.category}</div></td>
+            <td>${money(item.price)}</td>
+            <td>${money(item.recipe_cost)}</td>
+            <td>${item.recipe.map((line) => `${line.quantity} ${line.unit} ${line.name}`).join("<br>")}</td>
+          </tr>`
+        )
+      )}
+    </div>
+  `;
+  const lines = document.getElementById("recipe-lines");
+  const addLine = () => lines.appendChild(recipeLineRow(items));
+  document.getElementById("add-recipe-line").addEventListener("click", () => addLine());
+  addLine();
+  document.getElementById("menu-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      await api("/api/menu", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name.value,
+          category: form.category.value,
+          price: form.price.value,
+          recipe: [...form.querySelectorAll(".line")].map((row) => ({
+            item_id: Number(row.querySelector('[name="item_id"]').value),
+            quantity: row.querySelector('[name="quantity"]').value,
+            unit: row.querySelector('[name="unit"]').value,
+          })),
+        }),
+      });
+      showToast("Dish saved");
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+}
+
+async function renderSales() {
+  const sales = await api("/api/sales");
+  app.innerHTML = `
+    <form class="panel sheet-panel" id="sales-import">
+      <h3>Upload Pet Pooja day report</h3>
+      <p class="muted help">Export Item Wise Sales Report from Pet Pooja as Excel or CSV. Each sold dish with a recipe here comes off inventory. Items without a recipe are skipped.</p>
+      <label>File<input name="file" type="file" accept=".xlsx,.csv,.txt" required /></label>
+      <button class="primary" type="submit">Apply to inventory</button>
+      <p id="import-result" class="muted help"></p>
+    </form>
+    ${table(
+      ["When", "Ticket", "Tender", "Total", "COGS"],
+      sales.map(
+        (sale) => `<tr>
+          <td>${new Date(sale.sold_at).toLocaleString()}</td>
+          <td>${sale.lines.map((line) => `${line.quantity} × ${line.menu_item_name}`).join("<br>")}</td>
+          <td>${sale.payment_method}</td>
+          <td>${money(sale.total)}</td>
+          <td>${money(sale.cogs)}</td>
+        </tr>`
+      )
+    )}
+  `;
+  document.getElementById("sales-import").addEventListener("submit", async (event) => {
     event.preventDefault();
     const file = event.target.file.files[0];
     const body = new FormData();
     body.append("file", file);
-    await api("/api/bills", { method: "POST", body });
-    showToast("Bill read — review then post");
-    render();
-  });
-  app.querySelectorAll(".confirm-bill").forEach((button) => {
-    button.addEventListener("click", async () => {
-      await api(`/api/bills/${button.dataset.id}/confirm`, { method: "POST" });
-      showToast("Bill posted to inventory");
-      render();
-    });
+    const resultBox = document.getElementById("import-result");
+    try {
+      const result = await api("/api/sales/import", { method: "POST", body });
+      const skipped = (result.skipped || []).map((row) => `${row.name} (${row.reason})`).join(" · ");
+      resultBox.textContent = `${result.message}${skipped ? ". Skipped: " + skipped : ""}`;
+      showToast(result.message);
+      if (result.applied.length) render();
+    } catch (error) {
+      resultBox.textContent = error.message;
+      showToast(error.message);
+    }
   });
 }
 
@@ -622,15 +981,21 @@ async function renderPetpooja() {
     api("/api/petpooja/mappings"),
     api("/api/menu"),
   ]);
+  const webhook = `${window.location.origin}/api/integrations/petpooja/orders`;
   app.innerHTML = `
-    <p class="muted">Pet Pooja sends billed orders to <code>POST /api/integrations/petpooja/orders</code>. Map their item names to dishes so stock comes off automatically.</p>
+    <div class="panel sheet-panel">
+      <h3>How POS updates stock</h3>
+      <p class="muted help">When a ticket is billed in Pet Pooja, they must push it to this webhook. Matching dish names (same spelling as Dishes) deduct the recipe and log a sale.</p>
+      <label>Webhook<input value="${webhook}" readonly /></label>
+      <p class="muted help">Email Pet Pooja: enable outbound billed-order webhook for 303 Coffee, push to the URL above. There is no self-serve switch in their app.</p>
+    </div>
     <div class="two">
       ${table(
         ["Order", "Status", "Sale"],
         orders.map((order) => `<tr><td>${order.external_order_id}</td><td>${order.status}</td><td>${order.sale_id || "—"}</td></tr>`)
       )}
       <form class="panel" id="map-form">
-        <h3>Map a Pet Pooja item</h3>
+        <h3>Map a POS name if it differs</h3>
         <label>Pet Pooja name<input name="external_name" required /></label>
         <label>Pet Pooja item id<input name="external_item_id" /></label>
         <label>Our dish<select name="menu_item_id">${menu.map((item) => `<option value="${item.id}">${item.name}</option>`).join("")}</select></label>
@@ -643,40 +1008,31 @@ async function renderPetpooja() {
       mappings.map((row) => `<tr><td>${row.external_name}</td><td>${row.external_item_id || "—"}</td><td>${row.menu_item_name}</td></tr>`)
     )}
   `;
-  document.getElementById("map-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const form = new FormData(event.target);
-    await api("/api/petpooja/mappings", {
-      method: "POST",
-      body: JSON.stringify({
-        external_name: form.get("external_name"),
-        external_item_id: form.get("external_item_id") || null,
-        menu_item_id: Number(form.get("menu_item_id")),
-      }),
+  const mapForm = document.getElementById("map-form");
+  if (mapForm) {
+    mapForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.target);
+      try {
+        await api("/api/petpooja/mappings", {
+          method: "POST",
+          body: JSON.stringify({
+            external_name: form.get("external_name"),
+            external_item_id: form.get("external_item_id") || null,
+            menu_item_id: Number(form.get("menu_item_id")),
+          }),
+        });
+        showToast("Mapping saved");
+        render();
+      } catch (error) {
+        showToast(error.message);
+      }
     });
-    showToast("Mapping saved");
-    render();
-  });
+  }
 }
 
 async function renderProfile() {
   const me = state.user;
-  let usersHtml = "";
-  if (me.role === "owner") {
-    const users = await api("/api/auth/users");
-    usersHtml = `
-      ${table(["Name", "Email", "Role"], users.map((user) => `<tr><td>${user.name}</td><td>${user.email}</td><td>${user.role}</td></tr>`))}
-      <form class="panel" id="invite-form">
-        <h3>Add staff profile</h3>
-        <label>Name<input name="name" required /></label>
-        <label>Email<input name="email" type="email" required /></label>
-        <label>Password<input name="password" type="password" required minlength="8" /></label>
-        <label>Role<select name="role">${optionList(["staff", "manager", "owner"])}</select></label>
-        <label>Title<input name="title" /></label>
-        <button class="primary" type="submit">Create profile</button>
-      </form>
-    `;
-  }
   app.innerHTML = `
     <div class="two">
       <form class="panel" id="profile-form">
@@ -694,7 +1050,6 @@ async function renderProfile() {
         <button class="primary" type="submit">Change password</button>
       </form>
     </div>
-    ${usersHtml}
   `;
   document.getElementById("profile-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -715,34 +1070,19 @@ async function renderProfile() {
     event.target.reset();
     showToast("Password updated");
   });
-  const invite = document.getElementById("invite-form");
-  if (invite) {
-    invite.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      await api("/api/auth/users", {
-        method: "POST",
-        body: JSON.stringify(Object.fromEntries(new FormData(event.target).entries())),
-      });
-      showToast("Profile created");
-      render();
-    });
-  }
 }
 
 async function render() {
   try {
     if (state.page === "dashboard") return renderDashboard();
     if (state.page === "inventory") return renderInventory();
+    if (state.page === "recipes") return renderRecipes();
     if (state.page === "menu") return renderMenu();
-    if (state.page === "sauces") return renderSauces();
-    if (state.page === "purchases") return renderPurchases();
-    if (state.page === "bills") return renderBills();
     if (state.page === "sales") return renderSales();
     if (state.page === "petpooja") return renderPetpooja();
+    if (state.page === "sauces") return renderSauces();
     if (state.page === "waste") return renderWaste();
-    if (state.page === "suppliers") return renderSuppliers();
-    if (state.page === "profile") return renderProfile();
-    return renderAccounts();
+    return renderProfile();
   } catch (error) {
     app.innerHTML = `<div class="panel">${error.message}</div>`;
     showToast(error.message);

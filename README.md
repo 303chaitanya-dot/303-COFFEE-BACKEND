@@ -1,6 +1,6 @@
-# 303 Coffee — inventory & accounts
+# 303 Coffee — inventory
 
-Cafe back office for **303 Coffee**: logins, stock, sauces, dishes, purchases, bill uploads, Pet Pooja order deductions, and a double-entry ledger.
+Stock room for **303 Coffee**: items with price, serving size, reorder/par, and expiry. Sauces and waste stay; dishes, purchases, sales, bills, suppliers, and Pet Pooja are hidden for now.
 
 ## Run locally
 
@@ -21,16 +21,14 @@ Default login (change immediately):
 - Email: `admin@303coffee.local`
 - Password: `change-me`
 
-First start creates `data/cafe.db` and seeds a working cafe. If you already had an older local database, delete `data/cafe.db` once so the new tables can be created.
+First start creates `data/cafe.db` with an empty stock room (admin login only). Older databases drop sample items once on upgrade.
 
 ## What you can do
 
-- **Profiles** — owner, manager, and staff logins. Owners can add people.
-- **Purchases** — type item name, price, quantity, unit, and the serving size used in recipes. New items are created as you type.
-- **Sauces & dishes** — a sauce is ingredients per serving. A dish can use ingredients and sauces. **Price used** is the cost of that portion at current weighted-average cost.
-- **Bills** — upload a supplier bill. A `.txt` file is parsed immediately. Photo bills need `OPENAI_API_KEY`. Review the lines, then post stock.
-- **Pet Pooja** — map their item names to your dishes. When Pet Pooja sends a billed order to `POST /api/integrations/petpooja/orders`, recipes fire and inventory drops.
-- **Ledger** — purchases, sales, waste, and adjustments stay on the books.
+- **Inventory** — name, quantity, price per stock unit, serving size (number + unit), reorder point, par level, expiry. Price per serving is calculated from serving size.
+- **Sauces** — ingredients per serving, costed from current item prices.
+- **Waste** — write off spoilage.
+- **Profile** — your login. Team accounts come later.
 
 ## Deploy on Render
 
@@ -38,14 +36,7 @@ The repo includes `render.yaml`:
 
 1. Push this project to GitHub (not the LAZYFILMS account).
 2. In Render: **New → Blueprint** and point it at the repo.
-3. Set `ADMIN_EMAIL` / `ADMIN_PASSWORD` and, if you want photo bills, `OPENAI_API_KEY`.
-4. After deploy, give Pet Pooja this webhook:
-
-`https://<your-service>.onrender.com/api/integrations/petpooja/orders`
-
-Optional header: `X-Petpooja-Secret` matching `PETPOOJA_WEBHOOK_SECRET`.
-
-Ask Pet Pooja (`support@petpooja.com`) to push billed POS orders to that URL. Public Pet Pooja docs cover sending *online* orders into the POS; restaurant outbound order webhooks are enabled per store.
+3. Set `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
 
 ## Tests
 

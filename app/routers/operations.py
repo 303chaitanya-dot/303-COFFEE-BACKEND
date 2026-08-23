@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -14,6 +14,7 @@ from app.schemas import (
     PurchaseOut,
     SaleIn,
     SaleOut,
+    SalesImportOut,
     WasteIn,
     WasteOut,
 )
@@ -25,6 +26,7 @@ from app.services.inventory import (
     record_sale,
     record_waste,
 )
+from app.services.sales_import import apply_item_wise_report
 
 router = APIRouter()
 
@@ -78,6 +80,16 @@ def pay_purchase(purchase_id: int, db: Session = Depends(get_db)) -> MessageOut:
     mark_purchase_paid(db, purchase)
     db.commit()
     return MessageOut(detail=f"Purchase #{purchase.id} marked paid")
+
+
+@router.post("/sales/import", response_model=SalesImportOut)
+def import_petpooja_sales(file: UploadFile = File(...), db: Session = Depends(get_db)) -> SalesImportOut:
+    content = file.file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+    result = apply_item_wise_report(db, file.filename or "sales.xlsx", content)
+    db.commit()
+    return SalesImportOut(**result)
 
 
 @router.get("/sales", response_model=list[SaleOut])

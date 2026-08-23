@@ -163,13 +163,116 @@ th {
   font-size: 13px;
 }
 
-.low {
+tr.clickable {
+  cursor: pointer;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.cell-input {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.cell-input.narrow {
+  width: 78px;
+}
+
+.cell-input.search {
+  max-width: 280px;
+}
+
+.pack-cell,
+.add-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.item-row td {
+  vertical-align: top;
+}
+
+.check-all {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.low,
+.expired {
   color: var(--bad);
   font-weight: 600;
 }
 
-.good {
+.expiring,
+.expiring td {
+  color: #e3a15a;
+  font-weight: 600;
+}
+
+tr.expiring {
+  background: rgba(227, 161, 90, 0.12);
+}
+
+.expired,
+.expired td {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+tr.expired {
+  background: rgba(224, 137, 122, 0.16);
+}
+
+.help {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.good,
+.good-cell {
   color: var(--good);
+}
+
+.expired-cell.has-expired {
+  color: var(--bad);
+  font-weight: 700;
+  cursor: context-menu;
+  user-select: none;
+}
+
+.negative {
+  color: var(--bad);
+  font-weight: 700;
+}
+
+.expiry-menu {
+  position: fixed;
+  z-index: 40;
+  width: min(280px, calc(100vw - 16px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  display: grid;
+  gap: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+}
+
+.expiry-menu-title {
+  margin: 0;
+  font-weight: 600;
 }
 
 form {
@@ -222,10 +325,56 @@ button.ghost {
   color: var(--text);
 }
 
+.sheet-panel {
+  margin-bottom: 16px;
+}
+
 .two {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
   gap: 16px;
+}
+
+.page-stack {
+  display: grid;
+  gap: 18px;
+}
+
+.composer {
+  max-width: 460px;
+}
+
+.composer .row label {
+  flex: 1;
+  min-width: 140px;
+}
+
+.split-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 420px;
+  gap: 16px;
+  align-items: start;
+}
+
+.mode-toggle {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.mode-toggle button {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.mode-toggle button.active {
+  background: var(--accent);
+  color: #1a120d;
+  font-weight: 600;
 }
 
 .lines {
@@ -235,8 +384,13 @@ button.ghost {
 
 .line {
   display: grid;
-  grid-template-columns: 1fr 90px 110px auto;
+  grid-template-columns: minmax(0, 1fr) 72px 72px auto;
   gap: 8px;
+  align-items: center;
+}
+
+#sauce-form .line {
+  grid-template-columns: minmax(0, 1fr) 80px auto;
 }
 
 #toast {
@@ -298,7 +452,9 @@ body.locked #shell {
 
   .cards,
   .two,
-  .line {
+  .split-page,
+  .line,
+  #sauce-form .line {
     grid-template-columns: 1fr;
   }
 }

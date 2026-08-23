@@ -24,30 +24,65 @@ class SupplierOut(ORMModel, SupplierIn):
 
 
 class ItemIn(BaseModel):
-    sku: str = Field(min_length=1, max_length=40)
+    sku: str | None = None
     name: str = Field(min_length=1, max_length=160)
     category: str
     unit: str
-    quantity_on_hand: Decimal = Decimal("0")
+    qty_per_unit: Decimal = Decimal("1")
+    units_on_hand: Decimal = Decimal("0")
     reorder_point: Decimal = Decimal("0")
     par_level: Decimal = Decimal("0")
-    unit_cost: Decimal = Decimal("0")
+    price: Decimal = Decimal("0")
     serving_size: Decimal = Decimal("1")
+    serving_unit: str | None = None
+    expiry_date: date | None = None
     active: bool = True
+    add_units: Decimal = Decimal("0")
+    add_price: Decimal = Decimal("0")
+    replace_stock: bool = False
 
 
-class ItemOut(ORMModel, ItemIn):
+class ItemOut(ORMModel):
     id: int
+    sku: str
+    name: str
+    category: str
+    unit: str
+    qty_per_unit: Decimal
+    units_on_hand: Decimal
+    quantity_on_hand: Decimal
+    good_quantity: Decimal
+    expired_quantity: Decimal
+    reorder_point: Decimal
+    par_level: Decimal
+    price: Decimal
+    unit_cost: Decimal
+    serving_size: Decimal
+    serving_unit: str
+    price_per_serving: Decimal
+    expiry_date: date | None
+    expiry_status: str
     inventory_value: Decimal
     below_reorder: bool
+    active: bool
     created_at: datetime
     updated_at: datetime
+
+
+class ExpiredActionIn(BaseModel):
+    action: Literal["discard", "mark_good"]
+    quantity: Decimal = Field(gt=0)
+
+
+class ItemDeleteIn(BaseModel):
+    ids: list[int] = Field(min_length=1)
 
 
 class RecipeLineIn(BaseModel):
     item_id: int | None = None
     sauce_id: int | None = None
     quantity: Decimal = Field(gt=0)
+    unit: str | None = None
 
     @model_validator(mode="after")
     def one_component(self):
@@ -235,6 +270,8 @@ class DashboardOut(BaseModel):
     today_tickets: int
     low_stock_count: int
     low_stock: list[ItemOut]
+    expiring: list[ItemOut]
+    expired: list[ItemOut]
 
 
 class ProfitLossOut(BaseModel):
@@ -387,6 +424,40 @@ class PetPoojaMapOut(ORMModel):
     external_name: str
     menu_item_id: int
     menu_item_name: str
+
+
+class SheetLinkIn(BaseModel):
+    url: str = Field(min_length=8)
+
+
+class SheetSyncIn(BaseModel):
+    url: str = ""
+
+
+class SheetLinkOut(BaseModel):
+    url: str
+    last_synced_at: datetime | None = None
+    last_message: str | None = None
+
+
+class SheetSyncOut(BaseModel):
+    created: int
+    updated: int
+    skipped: int
+    errors: list[str]
+    last_synced_at: datetime | None
+    last_message: str | None
+    url: str
+
+
+class SalesImportOut(BaseModel):
+    filename: str
+    report_date: str
+    applied: list[dict]
+    skipped: list[dict]
+    sale_id: int | None
+    status: str
+    message: str
 
 
 class PetPoojaOrderOut(ORMModel):

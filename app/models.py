@@ -71,6 +71,13 @@ class AccountType(str, Enum):
     expense = "expense"
 
 
+class AppFlag(Base):
+    __tablename__ = "app_flags"
+
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[str] = mapped_column(String(80), default="1")
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -109,17 +116,35 @@ class Item(Base):
     name: Mapped[str] = mapped_column(String(160))
     category: Mapped[str] = mapped_column(String(40))
     unit: Mapped[str] = mapped_column(String(8))
+    qty_per_unit: Mapped[Decimal] = mapped_column(Qty, default=Decimal("1"))
+    units_on_hand: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
     quantity_on_hand: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
     reorder_point: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
     par_level: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
+    total_price: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"))
     unit_cost: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"))
     serving_size: Mapped[Decimal] = mapped_column(Qty, default=Decimal("1"))
+    serving_unit: Mapped[str] = mapped_column(String(8), default="pcs")
+    expiry_date: Mapped[date | None] = mapped_column(Date)
     active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     movements: Mapped[list["StockMovement"]] = relationship(back_populates="item")
     recipe_lines: Mapped[list["RecipeLine"]] = relationship(back_populates="item")
+    lots: Mapped[list["StockLot"]] = relationship(back_populates="item", cascade="all, delete-orphan")
+
+
+class StockLot(Base):
+    __tablename__ = "stock_lots"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    item_id: Mapped[int] = mapped_column(ForeignKey("items.id", ondelete="CASCADE"))
+    quantity: Mapped[Decimal] = mapped_column(Qty, default=Decimal("0"))
+    expiry_date: Mapped[date | None] = mapped_column(Date)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    item: Mapped["Item"] = relationship(back_populates="lots")
 
 
 class MenuItem(Base):
@@ -171,6 +196,7 @@ class RecipeLine(Base):
     item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id"))
     sauce_id: Mapped[int | None] = mapped_column(ForeignKey("sauces.id"))
     quantity: Mapped[Decimal] = mapped_column(Qty)
+    unit: Mapped[str | None] = mapped_column(String(8))
 
     menu_item: Mapped[MenuItem] = relationship(back_populates="recipe_lines")
     item: Mapped[Item] = relationship(back_populates="recipe_lines")
@@ -348,3 +374,13 @@ class PetPoojaOrder(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     sale: Mapped[Sale | None] = relationship()
+
+
+class InventorySheet(Base):
+    __tablename__ = "inventory_sheets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(20), default="inventory")
+    url: Mapped[str] = mapped_column(Text)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_message: Mapped[str | None] = mapped_column(Text)

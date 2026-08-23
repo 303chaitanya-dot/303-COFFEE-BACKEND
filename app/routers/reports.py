@@ -29,7 +29,9 @@ def sum_money(values) -> Decimal:
 
 @router.get("/dashboard", response_model=DashboardOut)
 def dashboard(db: Session = Depends(get_db)) -> DashboardOut:
-    items = db.scalars(select(Item).where(Item.active.is_(True)).order_by(Item.name)).all()
+    items = db.scalars(
+        select(Item).options(selectinload(Item.lots)).where(Item.active.is_(True)).order_by(Item.name)
+    ).all()
     presented = [present_item(item) for item in items]
     low_stock = [item for item in presented if item.below_reorder]
     sales = db.scalars(
@@ -45,6 +47,8 @@ def dashboard(db: Session = Depends(get_db)) -> DashboardOut:
         today_tickets=len(sales),
         low_stock_count=len(low_stock),
         low_stock=low_stock,
+        expiring=[item for item in presented if item.expiry_status == "expiring"],
+        expired=[item for item in presented if item.expired_quantity > 0 or item.expiry_status == "expired"],
     )
 
 
@@ -67,7 +71,10 @@ def list_ledger(limit: int = 80, db: Session = Depends(get_db)) -> list[JournalE
 
 @router.get("/reports/valuation", response_model=InventoryValuationOut)
 def inventory_valuation(db: Session = Depends(get_db)) -> InventoryValuationOut:
-    items = [present_item(item) for item in db.scalars(select(Item).order_by(Item.name)).all()]
+    items = [
+        present_item(item)
+        for item in db.scalars(select(Item).options(selectinload(Item.lots)).order_by(Item.name)).all()
+    ]
     return InventoryValuationOut(items=items, total_value=sum_money(item.inventory_value for item in items))
 
 

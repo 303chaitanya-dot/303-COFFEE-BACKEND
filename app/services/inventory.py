@@ -2,11 +2,12 @@ from datetime import datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Item,
+    ItemCategory,
     JournalEntry,
     MenuItem,
     MovementReason,
@@ -17,8 +18,10 @@ from app.models import (
     SaleLine,
     Sauce,
     SauceLine,
+    StockLot,
     StockMovement,
     Supplier,
+    Unit,
     WasteEvent,
     utcnow,
 )
@@ -27,6 +30,216 @@ from app.services.ledger import money, post_entry
 
 def qty(value: Decimal | int | float | str) -> Decimal:
     return Decimal(str(value)).quantize(Decimal("0.0001"))
+
+
+UNIT_BASE = {
+    "g": ("mass", Decimal("1")),
+    "kg": ("mass", Decimal("1000")),
+    "ml": ("vol", Decimal("1")),
+    "l": ("vol", Decimal("1000")),
+    "pcs": ("count", Decimal("1")),
+}
+
+
+def convert_qty(amount: Decimal, from_unit: str, to_unit: str) -> Decimal | None:
+    if from_unit == to_unit:
+        return qty(amount)
+    source = UNIT_BASE.get(from_unit)
+    dest = UNIT_BASE.get(to_unit)
+    if not source or not dest or source[0] != dest[0]:
+        return None
+    return qty(Decimal(amount) * source[1] / dest[1])
+
+
+def price_per_serving(item: Item) -> Decimal:
+    serving_in_stock = convert_qty(item.serving_size, item.serving_unit or item.unit, item.unit)
+    on_hand = qty(item.quantity_on_hand)
+    if serving_in_stock is None or on_hand <= 0:
+        return money(0)
+    total = Decimal(getattr(item, "total_price", None) or on_hand * Decimal(item.unit_cost))
+    return money(total * serving_in_stock / on_hand)
+
+
+def apply_pack_stock(item: Item, *, qty_per_unit, units_on_hand, total_price) -> None:
+    pack = qty(qty_per_unit)
+    units = qty(units_on_hand)
+    if pack <= 0:
+        raise HTTPException(status_code=400, detail="Qty per unit must be greater than zero")
+    total = money(total_price)
+    stock = qty(pack * units)
+    item.qty_per_unit = pack
+    item.units_on_hand = units
+    item.quantity_on_hand = stock
+    item.total_price = total
+    item.unit_cost = money(total / stock) if stock > 0 else money(0)
+
+
+def sync_pack_from_quantity(item: Item) -> None:
+    pack = qty(getattr(item, "qty_per_unit", None) or 1)
+    if pack <= 0:
+        pack = qty(1)
+        item.qty_per_unit = pack
+    on_hand = qty(item.quantity_on_hand)
+    item.units_on_hand = qty(on_hand / pack)
+    item.total_price = money(on_hand * Decimal(item.unit_cost))
+
+
+def delete_items(db: Session, item_ids: list[int]) -> int:
+    from app.models import PurchaseLine, RecipeLine, SauceLine, WasteEvent
+
+    deleted = 0
+    for item_id in item_ids:
+        item = db.get(Item, item_id)
+        if item is None:
+            continue
+        db.execute(delete(StockLot).where(StockLot.item_id == item_id))
+        db.execute(delete(StockMovement).where(StockMovement.item_id == item_id))
+        db.execute(delete(WasteEvent).where(WasteEvent.item_id == item_id))
+        db.execute(delete(PurchaseLine).where(PurchaseLine.item_id == item_id))
+        db.execute(delete(RecipeLine).where(RecipeLine.item_id == item_id))
+        db.execute(delete(SauceLine).where(SauceLine.item_id == item_id))
+        db.delete(item)
+        deleted += 1
+    db.commit()
+    return deleted
+
+
+def item_split(item: Item, today=None) -> tuple[Decimal, Decimal]:
+    from datetime import date
+
+    day = today or date.today()
+    on_hand = qty(getattr(item, "quantity_on_hand", None) or 0)
+    lots = [lot for lot in (getattr(item, "lots", None) or []) if qty(lot.quantity) > 0]
+    if not lots:
+        if on_hand <= 0:
+            return on_hand, qty(0)
+        expiry = getattr(item, "expiry_date", None)
+        if expiry is not None and expiry < day:
+            return qty(0), on_hand
+        return on_hand, qty(0)
+    expired = sum(
+        (qty(lot.quantity) for lot in lots if lot.expiry_date is not None and lot.expiry_date < day),
+        Decimal("0"),
+    )
+    lot_total = sum((qty(lot.quantity) for lot in lots), Decimal("0"))
+    remainder = on_hand - lot_total
+    if remainder > 0:
+        expiry = getattr(item, "expiry_date", None)
+        if expiry is not None and expiry < day:
+            expired += remainder
+    expired = qty(min(expired, max(on_hand, Decimal("0"))))
+    return qty(on_hand - expired), expired
+
+
+def expiry_status(item: Item, today=None) -> str:
+    from datetime import date
+
+    day = today or date.today()
+    _good, expired = item_split(item, day)
+    if expired > 0:
+        return "expired"
+    expiry = getattr(item, "expiry_date", None)
+    if expiry is not None and expiry < day:
+        return "expired"
+    for lot in getattr(item, "lots", None) or []:
+        if qty(lot.quantity) <= 0 or lot.expiry_date is None:
+            continue
+        days_left = (lot.expiry_date - day).days
+        if 0 <= days_left <= 7:
+            return "expiring"
+    if expiry is None:
+        return "ok"
+    if (expiry - day).days <= 7:
+        return "expiring"
+    return "ok"
+
+
+def add_stock_lot(db: Session, item: Item, quantity, expiry_date) -> None:
+    amount = qty(quantity)
+    if amount <= 0 or item.id is None:
+        return
+    lots = db.scalars(select(StockLot).where(StockLot.item_id == item.id)).all()
+    for lot in lots:
+        if lot.expiry_date == expiry_date:
+            lot.quantity = qty(lot.quantity) + amount
+            return
+    db.add(StockLot(item_id=item.id, quantity=amount, expiry_date=expiry_date, received_at=utcnow()))
+    db.flush()
+
+
+def consume_stock_lots(db: Session, item: Item, quantity, *, prefer_expired: bool = False) -> None:
+    from datetime import date
+
+    remaining = qty(quantity)
+    if remaining <= 0 or item.id is None:
+        return
+    today = date.today()
+    lots = [
+        lot
+        for lot in db.scalars(select(StockLot).where(StockLot.item_id == item.id)).all()
+        if qty(lot.quantity) > 0
+    ]
+
+    def sort_key(lot: StockLot):
+        expired = lot.expiry_date is not None and lot.expiry_date < today
+        expiry_ord = lot.expiry_date.toordinal() if lot.expiry_date else 10**9
+        received = lot.received_at or utcnow()
+        return (not expired if prefer_expired else expired, expiry_ord, received)
+
+    for lot in sorted(lots, key=sort_key):
+        if remaining <= 0:
+            break
+        take = min(qty(lot.quantity), remaining)
+        lot.quantity = qty(lot.quantity) - take
+        remaining -= take
+        if lot.quantity <= 0:
+            db.delete(lot)
+    db.flush()
+
+
+def apply_qty_delta_to_lots(
+    db: Session,
+    item: Item,
+    delta,
+    *,
+    expiry_date,
+    prefer_expired: bool = False,
+) -> None:
+    change = qty(delta)
+    if change > 0:
+        add_stock_lot(db, item, change, expiry_date)
+    elif change < 0:
+        consume_stock_lots(db, item, -change, prefer_expired=prefer_expired)
+
+
+def mark_expired_good(db: Session, item: Item, quantity) -> Decimal:
+    from datetime import date
+
+    remaining = qty(quantity)
+    if remaining <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than zero")
+    today = date.today()
+    lots = [
+        lot
+        for lot in db.scalars(select(StockLot).where(StockLot.item_id == item.id)).all()
+        if qty(lot.quantity) > 0 and lot.expiry_date is not None and lot.expiry_date < today
+    ]
+    lots.sort(key=lambda lot: (lot.expiry_date or today, lot.received_at or utcnow()))
+    moved = qty(0)
+    for lot in lots:
+        if remaining <= 0:
+            break
+        take = min(qty(lot.quantity), remaining)
+        lot.quantity = qty(lot.quantity) - take
+        remaining -= take
+        moved += take
+        if lot.quantity <= 0:
+            db.delete(lot)
+    if moved <= 0:
+        raise HTTPException(status_code=400, detail="No expired quantity to mark as good")
+    add_stock_lot(db, item, moved, None)
+    db.flush()
+    return moved
 
 
 def get_item(db: Session, item_id: int) -> Item:
@@ -84,6 +297,14 @@ def record_movement(
         )
     item.quantity_on_hand = next_qty
     item.updated_at = utcnow()
+    sync_pack_from_quantity(item)
+    apply_qty_delta_to_lots(
+        db,
+        item,
+        delta,
+        expiry_date=item.expiry_date,
+        prefer_expired=reason == MovementReason.waste.value,
+    )
     movement = StockMovement(
         item_id=item.id,
         quantity_delta=delta,
@@ -98,6 +319,14 @@ def record_movement(
     return movement
 
 
+def usage_in_stock(item: Item, amount, from_unit: str | None = None) -> Decimal:
+    source = from_unit or item.unit
+    converted = convert_qty(qty(amount), source, item.unit)
+    if converted is None:
+        return qty(amount)
+    return converted
+
+
 def sauce_cost(db: Session, sauce: Sauce) -> Decimal:
     total = Decimal("0.00")
     lines = sauce.lines or db.scalars(select(SauceLine).where(SauceLine.sauce_id == sauce.id)).all()
@@ -105,7 +334,7 @@ def sauce_cost(db: Session, sauce: Sauce) -> Decimal:
         ingredient = db.get(Item, line.item_id)
         if ingredient is None:
             continue
-        total += money(qty(line.quantity) * Decimal(ingredient.unit_cost))
+        total += money(usage_in_stock(ingredient, line.quantity) * Decimal(ingredient.unit_cost))
     return total
 
 
@@ -119,7 +348,7 @@ def line_price_used(db: Session, line: RecipeLine) -> Decimal:
         ingredient = db.get(Item, line.item_id)
         if ingredient is None:
             return money(0)
-        return money(qty(line.quantity) * Decimal(ingredient.unit_cost))
+        return money(usage_in_stock(ingredient, line.quantity, getattr(line, "unit", None)) * Decimal(ingredient.unit_cost))
     return money(0)
 
 
@@ -151,10 +380,10 @@ def explode_recipe(db: Session, menu_item: MenuItem, servings: int) -> list[tupl
                 raise HTTPException(status_code=400, detail=f"{sauce.name} has no ingredients")
             for sauce_line in sauce_lines:
                 item = get_item(db, sauce_line.item_id)
-                _add_usage(needed, item, qty(sauce_line.quantity) * qty(line.quantity) * servings)
+                _add_usage(needed, item, usage_in_stock(item, sauce_line.quantity) * qty(line.quantity) * servings)
         elif line.item_id:
             item = get_item(db, line.item_id)
-            _add_usage(needed, item, qty(line.quantity) * servings)
+            _add_usage(needed, item, usage_in_stock(item, line.quantity, getattr(line, "unit", None)) * servings)
         else:
             raise HTTPException(status_code=400, detail="Recipe line needs an ingredient or a sauce")
     return list(needed.values())
@@ -168,6 +397,53 @@ def make_sku(db: Session, name: str) -> str:
         suffix += 1
         sku = f"{base}{suffix}"
     return sku
+
+
+def upsert_named_item(db: Session, payload: dict) -> tuple[Item, str]:
+    name = str(payload["name"]).strip()
+    category = str(payload.get("category") or "other").strip().lower()
+    unit = str(payload["unit"]).strip().lower()
+    serving_unit = str(payload.get("serving_unit") or unit).strip().lower()
+    if category not in {item.value for item in ItemCategory}:
+        raise HTTPException(status_code=400, detail=f"Invalid category: {category}")
+    if unit not in {item.value for item in Unit}:
+        raise HTTPException(status_code=400, detail=f"Invalid stock unit: {unit}")
+    if serving_unit not in {item.value for item in Unit}:
+        raise HTTPException(status_code=400, detail=f"Invalid serving unit: {serving_unit}")
+    serving_size = qty(payload.get("serving_size") or 1)
+    if convert_qty(serving_size, serving_unit, unit) is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Serving unit {serving_unit} does not match stock unit {unit}",
+        )
+    item = db.scalar(select(Item).where(func.lower(Item.name) == name.lower()))
+    created = item is None
+    if created:
+        item = Item(sku=make_sku(db, name), name=name, active=True)
+        db.add(item)
+    item.name = name
+    item.category = category
+    item.unit = unit
+    item.serving_size = serving_size
+    item.serving_unit = serving_unit
+    item.reorder_point = qty(payload.get("reorder_point") or 0)
+    item.expiry_date = payload.get("expiry_date")
+    previous = qty(item.quantity_on_hand) if item.id else qty(0)
+    apply_pack_stock(
+        item,
+        qty_per_unit=payload.get("qty_per_unit") or 1,
+        units_on_hand=payload.get("units_on_hand") or 0,
+        total_price=payload.get("price") or 0,
+    )
+    db.flush()
+    apply_qty_delta_to_lots(
+        db,
+        item,
+        qty(item.quantity_on_hand) - previous,
+        expiry_date=item.expiry_date,
+        prefer_expired=True,
+    )
+    return item, "created" if created else "updated"
 
 
 def get_or_create_supplier(db: Session, name: str | None) -> Supplier:
@@ -200,7 +476,10 @@ def get_or_create_item(
         category=category,
         unit=unit,
         serving_size=qty(serving_size or 1),
+        qty_per_unit=Decimal("1"),
+        units_on_hand=Decimal("0"),
         quantity_on_hand=Decimal("0"),
+        total_price=Decimal("0"),
         unit_cost=Decimal("0"),
         active=True,
     )
@@ -372,13 +651,6 @@ def record_sale(
             else:
                 needed[item.id] = (item, used)
 
-    for item, used in needed.values():
-        if qty(item.quantity_on_hand) < used:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Not enough {item.name}: need {used} {item.unit}, have {item.quantity_on_hand}",
-            )
-
     for menu_item, servings, unit_price in prepared:
         db.add(
             SaleLine(
@@ -400,6 +672,7 @@ def record_sale(
                 unit_cost=item.unit_cost,
                 ref_type="sale",
                 ref_id=sale.id,
+                allow_negative=True,
             )
 
     post_entry(
@@ -441,6 +714,7 @@ def record_waste(
         ref_type="waste",
         ref_id=event.id,
         note=reason,
+        allow_negative=True,
     )
     post_entry(
         db,
@@ -467,7 +741,7 @@ def adjust_stock(db: Session, *, item_id: int, quantity_delta: Decimal, note: st
         unit_cost=item.unit_cost,
         ref_type="adjustment",
         note=note,
-        allow_negative=False,
+        allow_negative=True,
     )
     if delta > 0:
         lines = [

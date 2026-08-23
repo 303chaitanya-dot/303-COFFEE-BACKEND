@@ -40,7 +40,19 @@ from app.schemas import (
     WasteOut,
 )
 from app.services.bills import extracted_lines
-from app.services.inventory import item_value, line_price_used, purchase_total, qty, recipe_cost, sale_cogs, sale_total, sauce_cost
+from app.services.inventory import (
+    expiry_status,
+    item_split,
+    item_value,
+    line_price_used,
+    price_per_serving,
+    purchase_total,
+    qty,
+    recipe_cost,
+    sale_cogs,
+    sale_total,
+    sauce_cost,
+)
 from app.services.ledger import account_balance, money
 
 
@@ -50,20 +62,33 @@ def present_supplier(supplier: Supplier) -> SupplierOut:
 
 def present_item(item: Item) -> ItemOut:
     on_hand = qty(item.quantity_on_hand)
+    units = qty(getattr(item, "units_on_hand", None) or 0)
+    pack = qty(getattr(item, "qty_per_unit", None) or 1)
+    reorder = qty(item.reorder_point)
+    good_quantity, expired_quantity = item_split(item)
     return ItemOut(
         id=item.id,
         sku=item.sku,
         name=item.name,
         category=item.category,
         unit=item.unit,
+        qty_per_unit=pack,
+        units_on_hand=units,
         quantity_on_hand=on_hand,
-        reorder_point=qty(item.reorder_point),
+        good_quantity=good_quantity,
+        expired_quantity=expired_quantity,
+        reorder_point=reorder,
         par_level=qty(item.par_level),
+        price=money(getattr(item, "total_price", None) or item_value(item)),
         unit_cost=money(item.unit_cost),
         serving_size=qty(item.serving_size),
+        serving_unit=item.serving_unit or item.unit,
+        price_per_serving=price_per_serving(item),
+        expiry_date=item.expiry_date,
+        expiry_status=expiry_status(item),
         active=item.active,
         inventory_value=item_value(item),
-        below_reorder=on_hand <= qty(item.reorder_point),
+        below_reorder=reorder > 0 and units <= reorder,
         created_at=item.created_at,
         updated_at=item.updated_at,
     )
@@ -95,7 +120,7 @@ def present_menu_item(db: Session, menu_item: MenuItem) -> MenuItemOut:
                     item_id=line.item_id,
                     sauce_id=None,
                     name=item.name if item else "Unknown",
-                    unit=item.unit if item else "",
+                    unit=getattr(line, "unit", None) or (item.unit if item else ""),
                     quantity=qty(line.quantity),
                     price_used=line_price_used(db, line),
                 )

@@ -92,18 +92,28 @@ def ingest_order(db: Session, payload: dict) -> PetPoojaOrder:
         if menu_item is None:
             unmapped.append(item)
             continue
+        if item["name"] and not db.scalar(
+            select(PetPoojaMapping).where(func.lower(PetPoojaMapping.external_name) == item["name"].lower())
+        ):
+            db.add(
+                PetPoojaMapping(
+                    external_item_id=item["external_id"],
+                    external_name=item["name"],
+                    menu_item_id=menu_item.id,
+                )
+            )
         sale_lines.append({"menu_item_id": menu_item.id, "quantity": item["quantity"]})
 
     record = PetPoojaOrder(
         external_order_id=order_id,
         raw_payload=json.dumps(payload),
         unmapped_json=json.dumps(unmapped) if unmapped else None,
-        status="unmapped" if unmapped else "applied",
+        status="unmapped" if not sale_lines else "applied",
     )
     db.add(record)
     db.flush()
 
-    if unmapped:
+    if not sale_lines:
         return record
 
     sale = record_sale(
@@ -114,5 +124,5 @@ def ingest_order(db: Session, payload: dict) -> PetPoojaOrder:
         lines=sale_lines,
     )
     record.sale_id = sale.id
-    record.status = "applied"
+    record.status = "partial" if unmapped else "applied"
     return record

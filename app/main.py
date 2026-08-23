@@ -9,7 +9,7 @@ from app import db as database
 from app.auth import ensure_admin_user, get_current_user
 from app.config import settings
 from app.models import ItemCategory, MenuCategory, PaymentMethod, Unit
-from app.routers import auth, bills, catalog, operations, petpooja, recipes, reports
+from app.routers import auth, bills, catalog, operations, petpooja, recipes, reports, sheets
 from app.schemas import MetaOut
 from app.migrate import ensure_columns
 from app.seed import seed_if_empty
@@ -39,6 +39,7 @@ app.include_router(operations.router, prefix="/api", dependencies=AUTH)
 app.include_router(reports.router, prefix="/api", dependencies=AUTH)
 app.include_router(bills.router, prefix="/api", dependencies=AUTH)
 app.include_router(petpooja.router, prefix="/api")
+app.include_router(sheets.router, prefix="/api", dependencies=AUTH)
 
 
 @app.get("/api/health")
