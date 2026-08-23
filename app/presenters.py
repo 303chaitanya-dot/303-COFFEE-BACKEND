@@ -37,6 +37,8 @@ from app.schemas import (
     SauceOut,
     SupplierOut,
     UserOut,
+    VendorEntryOut,
+    VendorOut,
     WasteOut,
 )
 from app.services.bills import extracted_lines
@@ -58,6 +60,20 @@ from app.services.ledger import account_balance, money
 
 def present_supplier(supplier: Supplier) -> SupplierOut:
     return SupplierOut.model_validate(supplier)
+
+
+def present_vendor(supplier: Supplier, balance: Decimal) -> VendorOut:
+    entries = sorted(supplier.vendor_entries, key=lambda row: row.created_at, reverse=True)[:12]
+    return VendorOut(
+        id=supplier.id,
+        name=supplier.name,
+        phone=supplier.phone,
+        notes=supplier.notes,
+        active=supplier.active,
+        balance=money(balance),
+        created_at=supplier.created_at,
+        entries=[VendorEntryOut.model_validate(row) for row in entries],
+    )
 
 
 def present_item(item: Item) -> ItemOut:

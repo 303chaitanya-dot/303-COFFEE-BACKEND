@@ -106,6 +106,9 @@ class Supplier(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     purchases: Mapped[list["Purchase"]] = relationship(back_populates="supplier")
+    vendor_entries: Mapped[list["VendorEntry"]] = relationship(
+        back_populates="supplier", cascade="all, delete-orphan"
+    )
 
 
 class Item(Base):
@@ -217,6 +220,21 @@ class StockMovement(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     item: Mapped[Item] = relationship(back_populates="movements")
+
+
+class VendorEntry(Base):
+    __tablename__ = "vendor_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    supplier_id: Mapped[int] = mapped_column(ForeignKey("suppliers.id", ondelete="CASCADE"))
+    kind: Mapped[str] = mapped_column(String(20))
+    amount: Mapped[Decimal] = mapped_column(Money, default=Decimal("0"))
+    item_id: Mapped[int | None] = mapped_column(ForeignKey("items.id", ondelete="SET NULL"))
+    note: Mapped[str | None] = mapped_column(String(240))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    supplier: Mapped[Supplier] = relationship(back_populates="vendor_entries")
+    item: Mapped["Item"] = relationship()
 
 
 class Purchase(Base):

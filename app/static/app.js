@@ -1,6 +1,7 @@
 const pages = [
   ["dashboard", "Dashboard"],
   ["inventory", "Inventory"],
+  ["accounting", "Accounting"],
   ["recipes", "Recipe making"],
   ["menu", "Dishes"],
   ["sales", "Sales"],
@@ -72,6 +73,18 @@ function logout(reload = true) {
 
 function optionList(values, selected = "") {
   return values.map((value) => `<option value="${value}" ${value === selected ? "selected" : ""}>${value}</option>`).join("");
+}
+
+function vendorOptions(vendors, selected = "") {
+  return (
+    `<option value="" ${selected === "" ? "selected" : ""}>Others</option>` +
+    vendors
+      .map(
+        (vendor) =>
+          `<option value="${vendor.id}" ${String(vendor.id) === String(selected) ? "selected" : ""}>${vendor.name}</option>`
+      )
+      .join("")
+  );
 }
 
 function itemOptions(items, selected = "") {
@@ -147,7 +160,8 @@ function setPage(page) {
   state.page = page;
   const titles = {
     dashboard: ["Stock", "Dashboard", "Value on the shelf, today's POS sales, and what is going off."],
-    inventory: ["Stock room", "Inventory", "View the shelf, or switch to Edit to change a row. Right-click expired qty to discard or mark as good."],
+    inventory: ["Stock room", "Inventory", "View the shelf, or switch to Edit to change a row. Pick a vendor when stock comes in so Accounting knows who you owe."],
+    accounting: ["Books", "Accounting", "Add vendors here. Inventory bought from a vendor adds to what you owe. Settle pays down that balance."],
     recipes: ["Kitchen", "Recipe making", "Sold dishes and their ingredients. Sauces and marinades live under Sauces."],
     menu: ["POS dishes", "Dishes", "Names Pet Pooja matches when a ticket is punched."],
     sales: ["Counter", "Sales", "Upload the day's Pet Pooja Item Wise Sales Report to deduct recipes."],
@@ -289,6 +303,7 @@ async function saveInventoryRow(row, item, adding) {
       reorder_point: row.querySelector("[name=reorder_point]").value,
       expiry_date: parseExpiry(row.querySelector("[name=expiry_date]").value),
       replace_stock: false,
+      vendor_id: adding && row.querySelector("[name=vendor_id]").value ? Number(row.querySelector("[name=vendor_id]").value) : null,
     }),
   });
 }
@@ -432,6 +447,7 @@ function itemPayload(form) {
     reorder_point: form.reorder_point.value,
     expiry_date: parseExpiry(form.expiry_date.value),
     replace_stock: Boolean(form.dataset.itemId),
+    vendor_id: form.vendor_id?.value ? Number(form.vendor_id.value) : null,
   };
 }
 
@@ -449,6 +465,8 @@ function fillItemForm(form, item) {
   form.serving_size.value = Number(item.serving_size);
   form.reorder_point.value = Number(item.reorder_point);
   form.expiry_date.value = formatExpiry(item.expiry_date) === "—" ? "" : formatExpiry(item.expiry_date);
+  const vendorField = form.querySelector(".vendor-field");
+  if (vendorField) vendorField.hidden = true;
   syncServingUnits(form, item.serving_unit);
   form.price.dispatchEvent(new Event("input"));
   form.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -491,7 +509,7 @@ function inventoryViewRows(items) {
   );
 }
 
-function inventoryEditRows(items) {
+function inventoryEditRows(items, vendors) {
   return items.map(
     (item) => `<tr class="${expiryClass(item)} item-row" data-item-id="${item.id}" data-search="${escapeAttr((item.name + " " + item.category).toLowerCase())}">
       <td><input class="item-check" type="checkbox" value="${item.id}" /></td>
@@ -507,6 +525,7 @@ function inventoryEditRows(items) {
       <td class="add-cell">
         <input class="cell-input narrow" name="add_units" type="number" step="0.0001" placeholder="+ units" />
         <input class="cell-input narrow" name="add_price" type="number" step="0.01" placeholder="₹ spent" />
+        <select class="cell-input vendor-select" name="vendor_id">${vendorOptions(vendors)}</select>
         <button class="ghost add-stock" type="button">Add</button>
       </td>
       <td>${formatStock(item.quantity_on_hand, item.unit)}</td>
@@ -523,7 +542,7 @@ function inventoryEditRows(items) {
   );
 }
 
-function itemComposer() {
+function itemComposer(vendors) {
   return `
     <form class="panel composer" id="item-form">
       <h3>Add inventory</h3>
@@ -536,6 +555,7 @@ function itemComposer() {
       </div>
       <p id="stock-total" class="muted help">Total stock: 0 ml</p>
       <label>Price (total spent)<input name="price" type="number" step="0.01" value="0" required /></label>
+      <label class="vendor-field">Vendor<select name="vendor_id">${vendorOptions(vendors)}</select></label>
       <div class="row">
         <label>Serving size<input name="serving_size" type="number" step="0.0001" value="15" required /></label>
         <label>Serving unit<select name="serving_unit">${optionList(compatibleUnits("ml"), "ml")}</select></label>
@@ -552,7 +572,7 @@ function itemComposer() {
 }
 
 async function renderInventory() {
-  const items = await api("/api/items");
+  const [items, vendors] = await Promise.all([api("/api/items"), api("/api/vendors")]);
   const editing = state.inventoryMode === "edit";
   app.innerHTML = `
     <div class="toolbar">
@@ -566,12 +586,12 @@ async function renderInventory() {
     </div>
     ${
       editing
-        ? `${table(["", "Item", "Pack", "Now", "New in", "On hand", "Good", "Expired", "Expiry", ""], inventoryEditRows(items))}
-           <p class="muted help">Edit mode: change a row and Save. New in adds units on top of Now. Right-click Expired to discard or mark as good.</p>
-           ${itemComposer()}`
+        ? `${table(["", "Item", "Pack", "Now", "New in", "On hand", "Good", "Expired", "Expiry", ""], inventoryEditRows(items, vendors))}
+           <p class="muted help">Edit mode: change a row and Save. New in adds units on top of Now. Pick a vendor to add the ₹ spent to what you owe them. Others does not go on anyone's balance.</p>
+           ${itemComposer(vendors)}`
         : `<div class="split-page">
             ${table(["", "Item", "Pack", "Units", "On hand", "Good", "Expired", "Price", "Serving", "Per serving", "Expiry", "Status", ""], inventoryViewRows(items))}
-            ${itemComposer()}
+            ${itemComposer(vendors)}
           </div>
           <p class="muted help">Right-click or long-press Expired to discard it as waste, or mark some of it as not expired.</p>`
     }
@@ -633,6 +653,145 @@ async function renderInventory() {
       showToast(error.message);
     }
   });
+}
+
+function vendorBalanceLabel(balance) {
+  const amount = Number(balance);
+  if (amount < 0) return `<span class="balance-credit">Credit ${money(-amount)}</span>`;
+  return money(amount);
+}
+
+function vendorHistory(entries) {
+  if (!entries?.length) return "";
+  return `<div class="muted help vendor-history">${entries
+    .map((entry) => {
+      const added = entry.kind === "charge";
+      const label = entry.note || (added ? "Added" : "Settled");
+      return `<span>${added ? "+" : "−"}${money(entry.amount)} ${escapeAttr(label)}</span>`;
+    })
+    .join(" · ")}</div>`;
+}
+
+function vendorEntryPayload(row, kind) {
+  const amount = row.querySelector("[name=entry_amount]").value;
+  if (!Number(amount)) {
+    showToast("Enter an amount");
+    return null;
+  }
+  return {
+    amount,
+    kind,
+    note: row.querySelector("[name=entry_note]").value.trim() || null,
+  };
+}
+
+async function renderAccounting() {
+  const vendors = await api("/api/vendors");
+  const owed = vendors.reduce((sum, vendor) => sum + Math.max(0, Number(vendor.balance)), 0);
+  app.innerHTML = `
+    <div class="page-stack">
+      <form class="panel composer" id="vendor-form">
+        <h3>Add a vendor</h3>
+        <label>Name<input name="name" required placeholder="Metro, local farm, …" /></label>
+        <label>Phone<input name="phone" placeholder="Optional" /></label>
+        <label>Notes<input name="notes" placeholder="Optional" /></label>
+        <button class="primary" type="submit">Add vendor</button>
+        <p class="muted help">Registered vendors appear in Inventory. Add or reduce a balance here without touching stock. Others on that dropdown does not keep a balance.</p>
+      </form>
+      <div class="cards">
+        <article class="card"><p class="label">Vendors</p><strong>${vendors.length}</strong></article>
+        <article class="card"><p class="label">You owe</p><strong>${money(owed)}</strong></article>
+      </div>
+      ${table(
+        ["Vendor", "Balance", "Manual entry", ""],
+        vendors.map(
+          (vendor) => `<tr data-vendor-id="${vendor.id}" data-vendor-name="${escapeAttr(vendor.name)}">
+            <td>${vendor.name}${vendor.phone ? `<div class="muted">${vendor.phone}</div>` : ""}${vendorHistory(vendor.entries)}</td>
+            <td>${vendorBalanceLabel(vendor.balance)}</td>
+            <td class="settle-cell">
+              <input class="cell-input narrow" name="entry_amount" type="number" step="0.01" min="0.01" placeholder="₹ amount" />
+              <input class="cell-input" name="entry_note" placeholder="Note (optional)" />
+              <button class="ghost add-balance" type="button">Add to balance</button>
+              <button class="primary settle-vendor" type="button">Settle</button>
+            </td>
+            <td><button class="ghost delete-vendor" type="button">Delete</button></td>
+          </tr>`
+        )
+      )}
+    </div>
+  `;
+  document.getElementById("vendor-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const form = event.target;
+    try {
+      await api("/api/vendors", {
+        method: "POST",
+        body: JSON.stringify({
+          name: form.name.value,
+          phone: form.phone.value || null,
+          notes: form.notes.value || null,
+        }),
+      });
+      showToast(`Added ${form.name.value.trim()}`);
+      render();
+    } catch (error) {
+      showToast(error.message);
+    }
+  });
+  const bindVendorActions = () => {
+    app.querySelectorAll(".add-balance").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const row = button.closest("tr");
+        const payload = vendorEntryPayload(row, "add");
+        if (!payload) return;
+        try {
+          const vendor = await api(`/api/vendors/${row.dataset.vendorId}/entries`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          showToast(`Added ${money(payload.amount)}. Balance now ${money(vendor.balance)}`);
+          render();
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+    });
+    app.querySelectorAll(".settle-vendor").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const row = button.closest("tr");
+        const payload = vendorEntryPayload(row, "reduce");
+        if (!payload) return;
+        try {
+          const vendor = await api(`/api/vendors/${row.dataset.vendorId}/entries`, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          showToast(`Settled ${money(payload.amount)}. Balance now ${money(vendor.balance)}`);
+          render();
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+    });
+    app.querySelectorAll(".delete-vendor").forEach((button) => {
+      button.addEventListener("click", async (event) => {
+        event.preventDefault();
+        const row = button.closest("tr");
+        const name = row.dataset.vendorName;
+        if (!confirm(`Delete ${name}? Their balance and entries go with them.`)) return;
+        try {
+          await api(`/api/vendors/${row.dataset.vendorId}`, { method: "DELETE" });
+          showToast(`Deleted ${name}`);
+          render();
+        } catch (error) {
+          showToast(error.message);
+        }
+      });
+    });
+  };
+  setTimeout(bindVendorActions, 400);
 }
 
 async function renderWaste() {
@@ -1076,6 +1235,7 @@ async function render() {
   try {
     if (state.page === "dashboard") return renderDashboard();
     if (state.page === "inventory") return renderInventory();
+    if (state.page === "accounting") return renderAccounting();
     if (state.page === "recipes") return renderRecipes();
     if (state.page === "menu") return renderMenu();
     if (state.page === "sales") return renderSales();

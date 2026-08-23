@@ -4,8 +4,18 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.db import get_db
 from app.models import Item, ItemCategory, Supplier, Unit
-from app.presenters import present_item, present_supplier
-from app.schemas import ExpiredActionIn, ItemDeleteIn, ItemIn, ItemOut, SupplierIn, SupplierOut
+from app.presenters import present_item, present_supplier, present_vendor
+from app.schemas import (
+    ExpiredActionIn,
+    ItemDeleteIn,
+    ItemIn,
+    ItemOut,
+    SupplierIn,
+    SupplierOut,
+    VendorEntryIn,
+    VendorOut,
+    VendorSettleIn,
+)
 from app.services.inventory import (
     apply_pack_stock,
     apply_qty_delta_to_lots,
@@ -18,6 +28,14 @@ from app.services.inventory import (
     record_waste,
 )
 from app.services.ledger import money
+from app.services.vendors import (
+    charge_vendor,
+    create_vendor,
+    delete_vendor,
+    record_manual_entry,
+    settle_vendor,
+    vendor_balances,
+)
 
 router = APIRouter()
 
@@ -46,14 +64,57 @@ def list_suppliers(db: Session = Depends(get_db)) -> list[SupplierOut]:
 
 @router.post("/suppliers", response_model=SupplierOut, status_code=201)
 def create_supplier(payload: SupplierIn, db: Session = Depends(get_db)) -> SupplierOut:
-    existing = db.scalar(select(Supplier).where(Supplier.name == payload.name))
-    if existing:
-        raise HTTPException(status_code=409, detail="Supplier already exists")
-    supplier = Supplier(**payload.model_dump())
-    db.add(supplier)
+    supplier = create_vendor(db, **payload.model_dump())
     db.commit()
     db.refresh(supplier)
     return present_supplier(supplier)
+
+
+def _vendor_out(db: Session, vendor_id: int) -> VendorOut:
+    vendor = db.scalar(select(Supplier).options(selectinload(Supplier.vendor_entries)).where(Supplier.id == vendor_id))
+    if vendor is None:
+        raise HTTPException(status_code=404, detail="Vendor not found")
+    return present_vendor(vendor, vendor_balances(db).get(vendor.id, 0))
+
+
+@router.get("/vendors", response_model=list[VendorOut])
+def list_vendors(db: Session = Depends(get_db)) -> list[VendorOut]:
+    rows = db.scalars(
+        select(Supplier)
+        .where(Supplier.active.is_(True))
+        .options(selectinload(Supplier.vendor_entries))
+        .order_by(Supplier.name)
+    ).all()
+    balances = vendor_balances(db)
+    return [present_vendor(row, balances.get(row.id, 0)) for row in rows]
+
+
+@router.post("/vendors", response_model=VendorOut, status_code=201)
+def add_vendor(payload: SupplierIn, db: Session = Depends(get_db)) -> VendorOut:
+    vendor = create_vendor(db, **payload.model_dump())
+    db.commit()
+    return _vendor_out(db, vendor.id)
+
+
+@router.post("/vendors/{vendor_id}/settle", response_model=VendorOut)
+def settle_vendor_balance(vendor_id: int, payload: VendorSettleIn, db: Session = Depends(get_db)) -> VendorOut:
+    settle_vendor(db, vendor_id=vendor_id, amount=payload.amount, note=payload.note)
+    db.commit()
+    return _vendor_out(db, vendor_id)
+
+
+@router.post("/vendors/{vendor_id}/entries", response_model=VendorOut)
+def add_vendor_entry(vendor_id: int, payload: VendorEntryIn, db: Session = Depends(get_db)) -> VendorOut:
+    record_manual_entry(db, vendor_id=vendor_id, amount=payload.amount, kind=payload.kind, note=payload.note)
+    db.commit()
+    return _vendor_out(db, vendor_id)
+
+
+@router.delete("/vendors/{vendor_id}")
+def remove_vendor(vendor_id: int, db: Session = Depends(get_db)) -> dict[str, int]:
+    delete_vendor(db, vendor_id)
+    db.commit()
+    return {"deleted": 1}
 
 
 @router.put("/suppliers/{supplier_id}", response_model=SupplierOut)
@@ -108,6 +169,7 @@ def create_item(payload: ItemIn, db: Session = Depends(get_db)) -> ItemOut:
     db.add(item)
     db.flush()
     apply_qty_delta_to_lots(db, item, item.quantity_on_hand, expiry_date=item.expiry_date)
+    charge_vendor(db, vendor_id=payload.vendor_id, amount=payload.price, item=item)
     db.commit()
     return present_item(_item_with_lots(db, item.id))
 
@@ -157,6 +219,8 @@ def update_item(item_id: int, payload: ItemIn, db: Session = Depends(get_db)) ->
         expiry_date=item.expiry_date,
         prefer_expired=True,
     )
+    if added:
+        charge_vendor(db, vendor_id=payload.vendor_id, amount=payload.add_price, item=item)
     db.commit()
     return present_item(_item_with_lots(db, item.id))
 

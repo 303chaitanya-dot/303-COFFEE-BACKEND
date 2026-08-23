@@ -191,11 +191,30 @@ tr.clickable {
 }
 
 .pack-cell,
-.add-cell {
+.add-cell,
+.settle-cell {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+}
+
+.vendor-select {
+  min-width: 110px;
+  max-width: 160px;
+}
+
+.balance-credit {
+  color: var(--good);
+}
+
+.vendor-history {
+  margin-top: 6px;
+  max-width: 420px;
+}
+
+.vendor-history span + span::before {
+  content: "";
 }
 
 .item-row td {

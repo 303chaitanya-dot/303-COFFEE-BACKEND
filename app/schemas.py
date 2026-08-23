@@ -23,6 +23,36 @@ class SupplierOut(ORMModel, SupplierIn):
     created_at: datetime
 
 
+class VendorEntryOut(ORMModel):
+    id: int
+    kind: str
+    amount: Decimal
+    note: str | None = None
+    created_at: datetime
+
+
+class VendorOut(ORMModel):
+    id: int
+    name: str
+    phone: str | None = None
+    notes: str | None = None
+    active: bool = True
+    balance: Decimal
+    created_at: datetime
+    entries: list[VendorEntryOut] = []
+
+
+class VendorSettleIn(BaseModel):
+    amount: Decimal
+    note: str | None = None
+
+
+class VendorEntryIn(BaseModel):
+    amount: Decimal
+    kind: Literal["add", "reduce"]
+    note: str | None = None
+
+
 class ItemIn(BaseModel):
     sku: str | None = None
     name: str = Field(min_length=1, max_length=160)
@@ -40,6 +70,7 @@ class ItemIn(BaseModel):
     add_units: Decimal = Decimal("0")
     add_price: Decimal = Decimal("0")
     replace_stock: bool = False
+    vendor_id: int | None = None
 
 
 class ItemOut(ORMModel):
