@@ -251,12 +251,16 @@ button.ghost {
 .login-screen {
   position: fixed;
   inset: 0;
-  display: grid;
+  display: none;
   place-items: center;
   background:
     radial-gradient(circle at top left, rgba(217, 120, 74, 0.16), transparent 28%),
     var(--bg);
   z-index: 20;
+}
+
+.login-screen:not([hidden]) {
+  display: grid;
 }
 
 .login-card {
