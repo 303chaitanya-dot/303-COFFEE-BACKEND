@@ -49,6 +49,19 @@ h3,
   background: rgba(22, 17, 13, 0.8);
 }
 
+.brand-logo {
+  display: block;
+  width: 100%;
+  max-width: 196px;
+  height: auto;
+  margin: 0 0 16px;
+}
+
+.login-card .brand-logo {
+  max-width: 260px;
+  margin-bottom: 18px;
+}
+
 .sidebar h1 {
   margin: 6px 0 28px;
   font-size: 28px;
